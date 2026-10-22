@@ -2,10 +2,37 @@ defmodule DdDataStreams.Config do
   @moduledoc """
   The environment variables that configure the library.
 
-  Every value is read from the process environment when it is asked for, so an
-  application can set the variables before it starts its supervision tree and
-  changing one at runtime takes effect on the next call. The names and defaults
+  `service/0`, `env/0`, `version/0`, `primary_tag/0` and `enabled?/0` read the
+  process environment when they are asked for, so a variable set before the
+  supervision tree starts applies from the first call. The names and defaults
   follow dd-trace-go v2.13 and dd-trace-java 1.x.
+
+  Two decisions are taken once, when the application starts.
+  `DdDataStreams.Application` starts the aggregator from
+  `DD_DATA_STREAMS_ENABLED`, and takes the transport from
+  `config :dd_data_streams, transport:` or, when that key is absent, from the
+  Req transport when Req is installed. Req is an optional dependency, so an
+  application that does not depend on it has no transport at all: the aggregator
+  starts with none, the start logs an error naming the missing configuration,
+  and every flush is dropped.
+
+  The enable flag means something different in each place, and the difference
+  matters. `DdDataStreams.attach/1` and `DdDataStreams.publish/3` ask
+  `enabled?/0` on every call, so they follow the flag when it changes at
+  runtime, while the aggregator keeps the answer it started with. Turning the
+  flag on after boot installs handlers and injects headers with no aggregator to
+  take the checkpoints, and `DdDataStreams.Aggregator.add/1` drops every one of
+  them in silence. Turning it off after boot stops header injection and further
+  handler installation, but handlers installed earlier stay attached and keep
+  recording into the aggregator that is still running.
+
+  The two values belong in different places. The enable flag is an environment
+  variable - no configuration key reads it - and `attach/1` and `publish/3`
+  follow it immediately, so changing it at runtime changes injection and handler
+  installation, but not the aggregator, which keeps the decision it started with
+  and needs an application restart to change. The transport is a configuration
+  value, read only when the aggregator starts, so a change to it has no effect
+  until the application restarts.
 
   `agent_url/1` takes the environment as an argument because it is also asked
   for outside the VM's environment, from tests and from a custom transport.

@@ -1,0 +1,6 @@
+# The reference tracer, pinned. Its DSM payload is MsgPack + DDSketch, but the
+# wheel ships an encode-only msgpack and a native DDSketch with no decoder, so
+# the body is read with the primitives it is built from.
+ddtrace==3.17.0
+msgpack==1.2.3
+ddsketch==3.0.1

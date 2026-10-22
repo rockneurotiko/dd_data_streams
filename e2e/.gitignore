@@ -1,0 +1,14 @@
+# This project is a separate Mix project, so the root .gitignore's anchored
+# /_build/ and /deps/ do not reach it.
+/_build/
+/deps/
+
+# Each run writes the bodies it captured under its own run id.
+/capture-*/
+
+# The decoder's virtualenv.
+/decoder/.venv/
+
+# Test and crash leftovers.
+/erl_crash.dump
+/.elixir_ls/

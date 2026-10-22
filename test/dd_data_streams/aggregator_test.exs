@@ -61,7 +61,10 @@ defmodule DdDataStreams.AggregatorTest do
         %{state | calls: [{url, headers, body} | state.calls]}
       end)
 
-      Agent.get(:aggregator_test_transport, & &1.response)
+      case Agent.get(:aggregator_test_transport, & &1.response) do
+        {:raise, exception} -> raise exception
+        response -> response
+      end
     end
   end
 
@@ -197,6 +200,45 @@ defmodule DdDataStreams.AggregatorTest do
     Aggregator.flush()
     assert [_call] = calls()
     refute_receive {:flush_error, _event, _measurements, _metadata}
+  end
+
+  test "a failed flush drops the bucket and the next flush still delivers" do
+    respond_with({:error, :econnrefused})
+    pid = start_aggregator()
+    Aggregator.add(@checkpoint)
+
+    assert :ok = Aggregator.flush()
+
+    assert_receive {:flush_error, [:dd_data_streams, :flush, :error], %{count: 1},
+                    %{service: "checkout", reason: :econnrefused}}
+
+    assert Process.alive?(pid)
+    assert [_failed] = calls()
+
+    # The dropped bucket must not come back: this flush carries only the
+    # checkpoint added after the failure, one point per timestamp family.
+    respond_with({:ok, 202})
+    Aggregator.add(%{@checkpoint | hash: 42})
+
+    assert :ok = Aggregator.flush()
+
+    assert [{_url, _headers, body}, _failed] = calls()
+    assert point_count(body) == 2
+    assert :zlib.gunzip(body) =~ "subscription:orders-sub"
+    assert Process.alive?(pid)
+  end
+
+  test "a transport that raises drops the bucket instead of crashing" do
+    respond_with({:raise, %RuntimeError{message: "far end"}})
+    pid = start_aggregator()
+    Aggregator.add(@checkpoint)
+
+    assert :ok = Aggregator.flush()
+
+    assert_receive {:flush_error, [:dd_data_streams, :flush, :error], %{count: 1},
+                    %{service: "checkout", reason: %RuntimeError{message: "far end"}}}
+
+    assert Process.alive?(pid)
   end
 
   test "a non-2xx status is a failed flush as well" do

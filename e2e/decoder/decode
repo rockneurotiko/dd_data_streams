@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the decoder from its own virtualenv, so callers only need this path.
+set -e
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$dir/.venv/bin/python" "$dir/decode_payload.py" "$@"

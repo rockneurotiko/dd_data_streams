@@ -14,14 +14,16 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   #     gcloud beta emulators pubsub start --project=dsm-test --host-port=0.0.0.0:8091
   #   PUBSUB_EMULATOR_HOST=127.0.0.1:8091 mix test test/integration/pubsub_emulator_test.exs
   #
-  # DSM_PAYLOAD_DECODER may name a command that takes the path of a gzipped
-  # pipeline stats body, reads it with dd-trace-go v2's
-  # `StatsPayload.DecodeMsg`, and prints the decoded payload. When it is set the
-  # flushed body is handed to it; when it is not, that assertion is skipped
-  # because this repository deliberately carries no MsgPack decoder. The e2e run
-  # outside the repository, where Broadway and BroadwayCloudPubSub are real
-  # dependencies, is where the pipeline itself is proven; here Broadway is not a
-  # dependency, so its message metadata is built by hand.
+  # DSM_PAYLOAD_DECODER may name a command that takes the path of a captured
+  # pipeline stats body, decodes it and prints it. `e2e/decoder/decode` is that
+  # command: a Python decoder over the msgpack package and the ddsketch
+  # protobuf, pinned alongside dd-trace-py 3.17.0 in
+  # `e2e/decoder/requirements.txt`. When it is set the flushed body is handed to
+  # it; when it is not, that assertion is skipped because the library
+  # deliberately carries no MsgPack decoder. The pipeline itself is proven by
+  # the harness in `e2e/`, a separate Mix project in this repository where
+  # Broadway and BroadwayCloudPubSub are real dependencies; here Broadway is not
+  # a dependency, so its message metadata is built by hand.
   use ExUnit.Case, async: false
 
   alias DdDataStreams.Aggregator
@@ -242,8 +244,8 @@ defmodule DdDataStreams.PubSubEmulatorTest do
     body
   end
 
-  # The reference decoder is dd-trace-go v2's generated StatsPayload.DecodeMsg,
-  # run outside this repository because the library carries no MsgPack code.
+  # The reference decoder is e2e/decoder/decode, run on the flushed body because
+  # the library carries no MsgPack code.
   defp assert_reference_decoder(body) do
     case System.get_env("DSM_PAYLOAD_DECODER") do
       nil ->
