@@ -1,0 +1,144 @@
+defmodule DdDataStreams.Propagator do
+  @moduledoc """
+  The `dd-pathway-ctx-base64` codec.
+
+  The payload is the 64-bit unsigned hash in little-endian byte order followed by
+  the pathway start and the edge start as zigzag-encoded varints of Unix
+  milliseconds, with no separator or length prefix, and the whole thing is
+  standard base64. The timestamps are length-parsed rather than assumed to be a
+  fixed width, so a header written by any official tracer decodes here and a
+  header written here decodes there.
+
+  A malformed or missing header is not an error condition for a pipeline:
+  `get/1` returns `nil` and the consumer starts a new pathway.
+  """
+
+  alias DdDataStreams.Pathway
+
+  import Bitwise
+
+  @header "dd-pathway-ctx-base64"
+
+  # A 64-bit unsigned integer takes at most nine varint bytes: eight groups of
+  # seven bits plus a final byte carrying the remaining eight.
+  @max_varint_bytes 8
+
+  @doc """
+  Puts the pathway into a message's attributes under `#{@header}`.
+
+  A pathway that has not been checkpointed (hash zero) carries no information
+  and is not written. The attributes are returned unchanged so a produce path
+  can call this unconditionally.
+  """
+  @spec put(map(), Pathway.t()) :: map()
+  def put(attributes, %Pathway{hash: 0}), do: attributes
+
+  def put(attributes, %Pathway{} = pathway) do
+    Map.put(attributes, @header, encode_str(pathway))
+  end
+
+  @doc """
+  Reads the pathway out of a message's attributes.
+
+  Returns `nil` when the attribute is absent, is not a valid base64 header, or
+  does not contain a hash and two timestamps.
+  """
+  @spec get(map()) :: Pathway.t() | nil
+  def get(attributes) when is_map(attributes) do
+    with value when is_binary(value) <- Map.get(attributes, @header),
+         {:ok, pathway} <- decode_str(value) do
+      pathway
+    else
+      _ -> nil
+    end
+  end
+
+  def get(_attributes), do: nil
+
+  @doc """
+  Encodes a pathway as the raw header bytes.
+  """
+  @spec encode(Pathway.t()) :: binary()
+  def encode(%Pathway{hash: hash, pathway_start: pathway_start, edge_start: edge_start}) do
+    <<hash::little-64, varint(zigzag(pathway_start))::binary, varint(zigzag(edge_start))::binary>>
+  end
+
+  @doc """
+  Decodes a raw header.
+
+  Bytes after the two timestamps are ignored, and a varint need not be encoded in
+  its shortest form. The ninth byte of a varint ends it even when its
+  continuation bit is set.
+  """
+  @spec decode(binary()) :: {:ok, Pathway.t()} | :error
+  def decode(binary) when is_binary(binary) do
+    with <<hash::little-64, rest::binary>> <- binary,
+         {:ok, pathway_start, rest} <- take_varint(rest, 0, 0, 0),
+         {:ok, edge_start, _rest} <- take_varint(rest, 0, 0, 0) do
+      {:ok,
+       %Pathway{
+         hash: hash,
+         pathway_start: unzigzag(pathway_start),
+         edge_start: unzigzag(edge_start)
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  def decode(_binary), do: :error
+
+  @doc """
+  Encodes a pathway as a base64 header string.
+  """
+  @spec encode_str(Pathway.t()) :: String.t()
+  def encode_str(%Pathway{} = pathway) do
+    pathway |> encode() |> Base.encode64()
+  end
+
+  @doc """
+  Decodes a base64 header string.
+  """
+  @spec decode_str(binary()) :: {:ok, Pathway.t()} | :error
+  def decode_str(encoded) when is_binary(encoded) do
+    case Base.decode64(encoded, padding: false) do
+      {:ok, binary} -> decode(binary)
+      :error -> :error
+    end
+  end
+
+  def decode_str(_encoded), do: :error
+
+  defp zigzag(value) when value >= 0, do: value * 2
+  defp zigzag(value), do: -value * 2 - 1
+
+  defp unzigzag(value) do
+    Bitwise.bxor(value >>> 1, -(value &&& 1))
+  end
+
+  defp varint(value), do: varint(value, 0)
+
+  defp varint(value, @max_varint_bytes), do: <<value>>
+
+  defp varint(value, _groups) when value < 0x80, do: <<value>>
+
+  defp varint(value, groups) do
+    <<(value &&& 0x7F) ||| 0x80, varint(value >>> 7, groups + 1)::binary>>
+  end
+
+  # The final byte is taken whole, so a varint whose ninth byte still has the
+  # continuation bit set terminates there instead of running off the end.
+  defp take_varint(<<byte, rest::binary>>, shift, acc, @max_varint_bytes) do
+    {:ok, acc ||| byte <<< shift, rest}
+  end
+
+  defp take_varint(<<byte, rest::binary>>, shift, acc, _groups) when byte < 0x80 do
+    {:ok, acc ||| byte <<< shift, rest}
+  end
+
+  defp take_varint(<<byte, rest::binary>>, shift, acc, groups) do
+    take_varint(rest, shift + 7, acc ||| (byte &&& 0x7F) <<< shift, groups + 1)
+  end
+
+  defp take_varint(<<>>, _shift, _acc, _groups), do: :error
+end

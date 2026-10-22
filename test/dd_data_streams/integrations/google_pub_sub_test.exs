@@ -1,0 +1,210 @@
+defmodule DdDataStreams.Integrations.GooglePubSubTest do
+  use ExUnit.Case, async: false
+
+  alias DdDataStreams.Integrations.GooglePubSub
+  alias DdDataStreams.{Pathway, Propagator}
+
+  @headers Path.expand("../../fixtures/propagation/headers.txt", __DIR__)
+           |> File.read!()
+           |> Code.eval_string()
+           |> elem(0)
+
+  @service "checkout"
+  @env "prod"
+
+  @consume_tags ["direction:in", "subscription:orders-sub", "type:google-pubsub"]
+  @produce_tags ["direction:out", "topic:orders", "type:google-pubsub"]
+
+  setup do
+    variables = ~w(DD_SERVICE DD_ENV DD_PRIMARY_TAG)
+    previous = Map.new(variables, &{&1, System.get_env(&1)})
+
+    System.put_env("DD_SERVICE", @service)
+    System.put_env("DD_ENV", @env)
+    System.delete_env("DD_PRIMARY_TAG")
+
+    on_exit(fn ->
+      for {name, value} <- previous do
+        if value, do: System.put_env(name, value), else: System.delete_env(name)
+      end
+    end)
+
+    :ok
+  end
+
+  # The header dd-trace-py propagated in its own botocore test suite, i.e. a
+  # value a real tracer put on a message rather than one this library encoded.
+  defp reference_header do
+    Enum.find(@headers, &(&1.source == :python_test_suite))
+  end
+
+  defp pubsub_message(attributes, opts \\ []) do
+    %{
+      data: Keyword.get(opts, :data, "hello"),
+      attributes: attributes,
+      ordering_key: Keyword.get(opts, :ordering_key, "customer-1")
+    }
+  end
+
+  defp native(milliseconds) do
+    System.convert_time_unit(milliseconds, :millisecond, :native)
+  end
+
+  defp node_hash(tags), do: Pathway.node_hash(@service, @env, "", tags)
+
+  defp consume_hash(parent), do: Pathway.pathway_hash(node_hash(@consume_tags), parent)
+  defp produce_hash(parent), do: Pathway.pathway_hash(node_hash(@produce_tags), parent)
+
+  test "consume chains onto a pathway header written by another tracer" do
+    header = reference_header()
+    received_ms = header.edge_start + 42
+    attributes = %{"origin" => "eu", "dd-pathway-ctx-base64" => header.base64}
+    message = pubsub_message(attributes)
+
+    {pathway, checkpoint} = GooglePubSub.consume(message, "orders-sub", native(received_ms))
+
+    assert checkpoint.tags == @consume_tags
+    assert checkpoint.parent_hash == header.hash
+    assert checkpoint.hash == consume_hash(header.hash)
+    assert checkpoint.timestamp == received_ms
+    assert checkpoint.edge_latency == 42
+    assert checkpoint.pathway_latency == received_ms - header.pathway_start
+
+    # data 5 + "origin"/"eu" 8 + the inbound header key 21 and value 28
+    # + ordering key 10.
+    assert checkpoint.payload_size == 5 + 8 + 21 + 28 + 10
+
+    assert pathway.hash == checkpoint.hash
+    assert pathway.pathway_start == header.pathway_start
+    assert pathway.edge_start == received_ms
+  end
+
+  test "consume starts a fresh pathway when the header is absent or malformed" do
+    received_ms = 1_780_345_623_738
+
+    unusable = [
+      nil,
+      %{},
+      %{"dd-pathway-ctx-base64" => ""},
+      %{"dd-pathway-ctx-base64" => "not-base64!!"},
+      %{"dd-pathway-ctx-base64" => Base.encode64(<<0::64>>)},
+      %{"dd-pathway-ctx-base64" => Base.encode64(<<0::little-64, 0x80>>)}
+    ]
+
+    for attributes <- unusable do
+      {pathway, checkpoint} =
+        GooglePubSub.consume(pubsub_message(attributes), "orders-sub", native(received_ms))
+
+      assert checkpoint.parent_hash == 0
+      assert checkpoint.hash == consume_hash(0)
+      assert checkpoint.timestamp == received_ms
+      assert checkpoint.pathway_latency == 0
+      assert checkpoint.edge_latency == 0
+      assert pathway.hash == checkpoint.hash
+      assert pathway.pathway_start == received_ms
+      assert pathway.edge_start == received_ms
+    end
+  end
+
+  test "publish chains the produce edge onto the consume checkpoint" do
+    header = reference_header()
+    {consumed, consume_checkpoint} = consume_reference(header)
+    message = pubsub_message(%{"origin" => "eu"})
+
+    {pathway, checkpoint, published} =
+      GooglePubSub.publish("orders", message, consumed, & &1)
+
+    assert checkpoint.tags == @produce_tags
+    assert checkpoint.parent_hash == consume_checkpoint.hash
+    assert checkpoint.hash == produce_hash(consume_checkpoint.hash)
+    assert pathway.hash == checkpoint.hash
+    assert pathway.pathway_start == consumed.pathway_start
+    assert pathway.edge_start == checkpoint.timestamp
+
+    assert published.data == message.data
+    assert published.ordering_key == message.ordering_key
+  end
+
+  test "publish starts a fresh pathway when the caller has none" do
+    message = pubsub_message(nil)
+
+    {pathway, checkpoint, _published} =
+      GooglePubSub.publish("orders", message, Pathway.new(%{}), & &1)
+
+    assert checkpoint.parent_hash == 0
+    assert checkpoint.hash == produce_hash(0)
+    assert pathway.pathway_start == checkpoint.timestamp
+    assert pathway.edge_start == checkpoint.timestamp
+  end
+
+  test "publish injects a header that round-trips through this library's own decoder" do
+    # A round-trip through this library's own encoder: the overwrite and the
+    # attribute name are what the reference tracers do, but the value is not an
+    # independent wire capture.
+    message =
+      pubsub_message(%{"origin" => "eu", "dd-pathway-ctx-base64" => "stale"})
+
+    {pathway, _checkpoint, published} =
+      GooglePubSub.publish("orders", message, Pathway.new(%{}), & &1)
+
+    assert published.attributes["origin"] == "eu"
+    refute published.attributes["dd-pathway-ctx-base64"] == "stale"
+    assert Propagator.get(published.attributes) == pathway
+  end
+
+  test "publish measures the payload before writing the pathway attribute" do
+    received_ms = 1_780_345_623_738
+
+    {consumed, _checkpoint} =
+      GooglePubSub.consume(pubsub_message(nil), "orders-sub", native(received_ms))
+
+    message = pubsub_message(%{"origin" => "eu"}, data: "payload")
+    calls = :counters.new(1, [])
+
+    publish_fun = fn outgoing ->
+      :counters.add(calls, 1, 1)
+      outgoing
+    end
+
+    {_pathway, checkpoint, published} =
+      GooglePubSub.publish("orders", message, consumed, publish_fun)
+
+    # data 7 + "origin"/"eu" 8 + ordering key 10; the 21-byte key and 28-byte
+    # value this call writes are not counted.
+    assert checkpoint.payload_size == 7 + 8 + 10
+    assert Map.has_key?(published.attributes, "dd-pathway-ctx-base64")
+    # The caller publishes once, not once per attribute it carries.
+    assert :counters.get(calls, 1) == 1
+  end
+
+  test "two publishes from one consumed pathway share one produce node" do
+    header = reference_header()
+    {consumed, consume_checkpoint} = consume_reference(header)
+    message = pubsub_message(nil)
+
+    {_first_pathway, first, _} = GooglePubSub.publish("orders", message, consumed, & &1)
+    {_second_pathway, second, _} = GooglePubSub.publish("orders", message, consumed, & &1)
+
+    assert first.parent_hash == consume_checkpoint.hash
+    assert second.parent_hash == consume_checkpoint.hash
+    assert first.hash == second.hash
+  end
+
+  test "a message without attributes or ordering key is measured by its data" do
+    message = %{data: "abc", attributes: nil, ordering_key: nil}
+
+    {_pathway, checkpoint, published} =
+      GooglePubSub.publish("orders", message, Pathway.new(%{}), & &1)
+
+    assert checkpoint.payload_size == 3
+    assert Map.keys(published.attributes) == ["dd-pathway-ctx-base64"]
+  end
+
+  defp consume_reference(header) do
+    GooglePubSub.consume(
+      pubsub_message(%{"dd-pathway-ctx-base64" => header.base64}),
+      "orders-sub",
+      native(header.edge_start + 1)
+    )
+  end
+end

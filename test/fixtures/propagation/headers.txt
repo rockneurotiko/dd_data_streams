@@ -1,0 +1,127 @@
+# Pathway header bytes from the official Datadog tracers and from the wire-format
+# primitives they share. The expected fields of each entry come from the reference
+# implementation, not from reading the header back with this library, so the
+# codec is checked against the wire format rather than against itself.
+#
+# dd-trace-go v2, commit e5c3c1ce53fbc9e6399129a3078cdae9136e2b85. A throw-away
+# test in the package built the unexported Pathway value and called
+# EncodeBase64/DecodeBase64 from internal/datastreams/propagator.go.
+#
+# dd-trace-py, commit 0729596a96039adcd4934e58f9a679ce1b15ed0f. The :python
+# entries encode struct.pack("<Q", hash) followed by encode_var_int_64/1 for the
+# two timestamps, which is DataStreamsCtx.encode in
+# internal/datastreams/processor.py. The :python_test_suite entry is a literal
+# header from that repository's tests/datastreams/test_botocore.py, i.e. a value
+# a real tracer propagated.
+#
+# dd-trace-java, commit e1b76dbfba85c5ef9f36d65992fcf9430aa7cad5. Its
+# DefaultPathwayContext.encode writes the hash with writeLongLE, the two
+# millisecond values with VarEncodingHelper.encodeSignedVarLong and base64s the
+# buffer. Building the tracer needs its full Gradle build, so the :java entries
+# below are derived analytically from that source, not captured from a running
+# JVM tracer; each states the value it encodes. Two of them coincide with :go
+# entries because both tracers share this wire format.
+#
+# The nine-byte entries use timestamps of 2^56 ms, far past any wall clock, to
+# exercise the widest varint the format allows.
+[
+  %{
+    source: :go,
+    provenance: "dd-trace-go Pathway{hash: 234} EncodeBase64()",
+    base64: "6gAAAAAAAACAoKv++WKA2uKB+mI=",
+    hash: 234,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000
+  },
+  %{
+    source: :go,
+    provenance: "dd-trace-go Pathway{hash: ^uint64(0)} EncodeBase64()",
+    base64: "//////////+AoKv++WKA2uKB+mI=",
+    hash: 18_446_744_073_709_551_615,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000
+  },
+  %{
+    source: :go,
+    provenance: "dd-trace-go Pathway{hash: 0x0123456789abcdef} EncodeBase64()",
+    base64: "782riWdFIwGAoKv++WKAoKv++WI=",
+    hash: 0x0123_4567_89AB_CDEF,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_000_000_000
+  },
+  %{
+    source: :go,
+    provenance: "dd-trace-go Pathway{hash: 1, start: unix(-100), edge: unix(-50)} EncodeBase64()",
+    base64: "AQAAAAAAAAC/mgyfjQY=",
+    hash: 1,
+    pathway_start: -100_000,
+    edge_start: -50_000
+  },
+  %{
+    source: :go,
+    provenance: "dd-trace-go Pathway{hash: 0, both starts: 1780345623738} EncodeBase64()",
+    base64: "AAAAAAAAAAD00vLN0Gf00vLN0Gc=",
+    hash: 0,
+    pathway_start: 1_780_345_623_738,
+    edge_start: 1_780_345_623_738
+  },
+  %{
+    source: :python_test_suite,
+    provenance: "dd-trace-py tests/datastreams/test_botocore.py propagated header",
+    base64: "leP46s4u2yD00vLN0Gf00vLN0Gc=",
+    hash: 2_367_537_495_353_648_021,
+    pathway_start: 1_780_345_623_738,
+    edge_start: 1_780_345_623_738
+  },
+  %{
+    source: :python,
+    provenance:
+      "dd-trace-py DataStreamsCtx.encode(0x20db2eceeaf8e395, 1700000000000, 1700003600000)",
+    base64: "leP46s4u2yCAoKv++WKA2uKB+mI=",
+    hash: 2_367_537_495_353_648_021,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000
+  },
+  %{
+    source: :java,
+    provenance: "derived from dd-trace-java encode(-1L, 1780345623738, 1780345624738)",
+    base64: "///////////00vLN0GfE4vLN0Gc=",
+    hash: 18_446_744_073_709_551_615,
+    pathway_start: 1_780_345_623_738,
+    edge_start: 1_780_345_624_738
+  },
+  %{
+    source: :java,
+    provenance: "derived from dd-trace-java encode(0x0123456789abcdef, 1700000000000, 1700003600000)",
+    base64: "782riWdFIwGAoKv++WKA2uKB+mI=",
+    hash: 0x0123_4567_89AB_CDEF,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000
+  },
+  %{
+    source: :java,
+    provenance: "derived from dd-trace-java encode(1, -100000, -50000)",
+    base64: "AQAAAAAAAAC/mgyfjQY=",
+    hash: 1,
+    pathway_start: -100_000,
+    edge_start: -50_000
+  },
+  %{
+    source: :java,
+    provenance: "derived from dd-trace-java encode(0, 1780345623738, 1780345623738)",
+    base64: "AAAAAAAAAAD00vLN0Gf00vLN0Gc=",
+    hash: 0,
+    pathway_start: 1_780_345_623_738,
+    edge_start: 1_780_345_623_738
+  },
+  %{
+    source: :java,
+    provenance: "derived from dd-trace-java encode(234, 2^56, 2^56): nine-byte timestamps",
+    # zigzag(2^56) = 2^57, whose varint is eight 0x80 continuation bytes for the
+    # low 56 zero bits plus a ninth byte 2^57 >>> 56 = 0x02.
+    base64: "6gAAAAAAAACAgICAgICAgAKAgICAgICAgAI=",
+    hash: 234,
+    pathway_start: 72_057_594_037_927_936,
+    edge_start: 72_057_594_037_927_936
+  }
+]

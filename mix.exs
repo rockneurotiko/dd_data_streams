@@ -14,15 +14,20 @@ defmodule DdDataStreams.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {DdDataStreams.Application, []}
     ]
   end
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      # Every checkpoint is a telemetry event, and attach/1 installs the
+      # Broadway handlers on them, so telemetry is always needed.
+      {:telemetry, "~> 1.0"},
+      # The default agent transport talks HTTP through Req. It is optional so an
+      # application that passes its own transport does not pull in an HTTP client.
+      {:req, "~> 0.5", optional: true}
     ]
   end
 end
