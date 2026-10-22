@@ -13,17 +13,6 @@
 # internal/datastreams/processor.py. The :python_test_suite entry is a literal
 # header from that repository's tests/datastreams/test_botocore.py, i.e. a value
 # a real tracer propagated.
-#
-# dd-trace-java, commit e1b76dbfba85c5ef9f36d65992fcf9430aa7cad5. Its
-# DefaultPathwayContext.encode writes the hash with writeLongLE, the two
-# millisecond values with VarEncodingHelper.encodeSignedVarLong and base64s the
-# buffer. Building the tracer needs its full Gradle build, so the :java entries
-# below are derived analytically from that source, not captured from a running
-# JVM tracer; each states the value it encodes. Two of them coincide with :go
-# entries because both tracers share this wire format.
-#
-# The nine-byte entries use timestamps of 2^56 ms, far past any wall clock, to
-# exercise the widest varint the format allows.
 [
   %{
     source: :go,
@@ -81,47 +70,5 @@
     hash: 2_367_537_495_353_648_021,
     pathway_start: 1_700_000_000_000,
     edge_start: 1_700_003_600_000
-  },
-  %{
-    source: :java,
-    provenance: "derived from dd-trace-java encode(-1L, 1780345623738, 1780345624738)",
-    base64: "///////////00vLN0GfE4vLN0Gc=",
-    hash: 18_446_744_073_709_551_615,
-    pathway_start: 1_780_345_623_738,
-    edge_start: 1_780_345_624_738
-  },
-  %{
-    source: :java,
-    provenance: "derived from dd-trace-java encode(0x0123456789abcdef, 1700000000000, 1700003600000)",
-    base64: "782riWdFIwGAoKv++WKA2uKB+mI=",
-    hash: 0x0123_4567_89AB_CDEF,
-    pathway_start: 1_700_000_000_000,
-    edge_start: 1_700_003_600_000
-  },
-  %{
-    source: :java,
-    provenance: "derived from dd-trace-java encode(1, -100000, -50000)",
-    base64: "AQAAAAAAAAC/mgyfjQY=",
-    hash: 1,
-    pathway_start: -100_000,
-    edge_start: -50_000
-  },
-  %{
-    source: :java,
-    provenance: "derived from dd-trace-java encode(0, 1780345623738, 1780345623738)",
-    base64: "AAAAAAAAAAD00vLN0Gf00vLN0Gc=",
-    hash: 0,
-    pathway_start: 1_780_345_623_738,
-    edge_start: 1_780_345_623_738
-  },
-  %{
-    source: :java,
-    provenance: "derived from dd-trace-java encode(234, 2^56, 2^56): nine-byte timestamps",
-    # zigzag(2^56) = 2^57, whose varint is eight 0x80 continuation bytes for the
-    # low 56 zero bits plus a ninth byte 2^57 >>> 56 = 0x02.
-    base64: "6gAAAAAAAACAgICAgICAgAKAgICAgICAgAI=",
-    hash: 234,
-    pathway_start: 72_057_594_037_927_936,
-    edge_start: 72_057_594_037_927_936
   }
 ]

@@ -1,0 +1,270 @@
+# Pathway headers encoded by this library and read back by the reference decoders of the
+# official tracers. Each entry states the pathway, the base64 this library's encoder emits for
+# it, and what each tracer's own decoder returned for those bytes: the decoded hash and
+# timestamps, and the header that decoder re-encoded. The base64 fields are the captured
+# output of those implementations, so they are a recording and not a specification: when a
+# change in this library fails the comparison, the encoder moved and that is the finding.
+#
+# dd-trace-go v2, commit 31c447c: internal/datastreams.DecodeBase64/EncodeBase64.
+# dd-trace-java 1.67.1: datadog.trace.agent.core.datastreams.DefaultPathwayContext.decode/encode.
+# dd-trace-py 3.17.0: DataStreamsProcessor.decode_pathway and DataStreamsCtx.encode.
+#
+# Timestamps are Unix milliseconds; Java reports a start in nanoseconds and its hash as a
+# signed long, so -1 is the same hash as 18446744073709551615. Java does not expose the edge
+# start, which the re-encoded header covers instead.
+#
+# The last entry is the widest varint the format allows, timestamps of 2^56 milliseconds.
+# dd-trace-py and this library read it back exactly; dd-trace-go stops early and reports
+# 4611686018427 (its encoder then writes that truncated value), and dd-trace-java clamps the
+# start to the largest signed long, so neither re-encodes to the same bytes. It is recorded
+# rather than corrected because it is what those decoders do, and a timestamp of that
+# magnitude is not a wall clock any tracer produces.
+[
+  %{
+    provenance: "Pathway{hash: 234, pathway_start: 1700000000000, edge_start: 1700003600000}",
+    hash: 234,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000,
+    base64: "6gAAAAAAAACAoKv++WKA2uKB+mI=",
+    go: %{
+      hash: 234,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "6gAAAAAAAACAoKv++WKA2uKB+mI="
+    },
+    java: %{
+      hash: 234,
+      start_nanos: 1_700_000_000_000_000_000,
+      reencoded: "6gAAAAAAAACAoKv++WKA2uKB+mI="
+    },
+    python: %{
+      hash: 234,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "6gAAAAAAAACAoKv++WKA2uKB+mI="
+    }
+  },
+  %{
+    provenance:
+      "Pathway{hash: 18446744073709551615, pathway_start: 1700000000000, edge_start: 1700003600000}",
+    hash: 18_446_744_073_709_551_615,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000,
+    base64: "//////////+AoKv++WKA2uKB+mI=",
+    go: %{
+      hash: 18_446_744_073_709_551_615,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "//////////+AoKv++WKA2uKB+mI="
+    },
+    java: %{
+      hash: -1,
+      start_nanos: 1_700_000_000_000_000_000,
+      reencoded: "//////////+AoKv++WKA2uKB+mI="
+    },
+    python: %{
+      hash: 18_446_744_073_709_551_615,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "//////////+AoKv++WKA2uKB+mI="
+    }
+  },
+  %{
+    provenance:
+      "Pathway{hash: 81985529216486895, pathway_start: 1700000000000, edge_start: 1700000000000}",
+    hash: 81_985_529_216_486_895,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_000_000_000,
+    base64: "782riWdFIwGAoKv++WKAoKv++WI=",
+    go: %{
+      hash: 81_985_529_216_486_895,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_000_000_000,
+      reencoded: "782riWdFIwGAoKv++WKAoKv++WI="
+    },
+    java: %{
+      hash: 81_985_529_216_486_895,
+      start_nanos: 1_700_000_000_000_000_000,
+      reencoded: "782riWdFIwGAoKv++WKAoKv++WI="
+    },
+    python: %{
+      hash: 81_985_529_216_486_895,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_000_000_000,
+      reencoded: "782riWdFIwGAoKv++WKAoKv++WI="
+    }
+  },
+  %{
+    provenance: "Pathway{hash: 1, pathway_start: -100000, edge_start: -50000}",
+    hash: 1,
+    pathway_start: -100_000,
+    edge_start: -50000,
+    base64: "AQAAAAAAAAC/mgyfjQY=",
+    go: %{
+      hash: 1,
+      pathway_start: -100_000,
+      edge_start: -50000,
+      reencoded: "AQAAAAAAAAC/mgyfjQY="
+    },
+    java: %{
+      hash: 1,
+      start_nanos: -100_000_000_000,
+      reencoded: "AQAAAAAAAAC/mgyfjQY="
+    },
+    python: %{
+      hash: 1,
+      pathway_start: -100_000,
+      edge_start: -50000,
+      reencoded: "AQAAAAAAAAC/mgyfjQY="
+    }
+  },
+  %{
+    provenance: "Pathway{hash: 0, pathway_start: 1780345623738, edge_start: 1780345623738}",
+    hash: 0,
+    pathway_start: 1_780_345_623_738,
+    edge_start: 1_780_345_623_738,
+    base64: "AAAAAAAAAAD00vLN0Gf00vLN0Gc=",
+    go: %{
+      hash: 0,
+      pathway_start: 1_780_345_623_738,
+      edge_start: 1_780_345_623_738,
+      reencoded: "AAAAAAAAAAD00vLN0Gf00vLN0Gc="
+    },
+    java: %{
+      hash: 0,
+      start_nanos: 1_780_345_623_738_000_000,
+      reencoded: "AAAAAAAAAAD00vLN0Gf00vLN0Gc="
+    },
+    python: %{
+      hash: 0,
+      pathway_start: 1_780_345_623_738,
+      edge_start: 1_780_345_623_738,
+      reencoded: "AAAAAAAAAAD00vLN0Gf00vLN0Gc="
+    }
+  },
+  %{
+    provenance:
+      "Pathway{hash: 2367537495353648021, pathway_start: 1780345623738, edge_start: 1780345623738}",
+    hash: 2_367_537_495_353_648_021,
+    pathway_start: 1_780_345_623_738,
+    edge_start: 1_780_345_623_738,
+    base64: "leP46s4u2yD00vLN0Gf00vLN0Gc=",
+    go: %{
+      hash: 2_367_537_495_353_648_021,
+      pathway_start: 1_780_345_623_738,
+      edge_start: 1_780_345_623_738,
+      reencoded: "leP46s4u2yD00vLN0Gf00vLN0Gc="
+    },
+    java: %{
+      hash: 2_367_537_495_353_648_021,
+      start_nanos: 1_780_345_623_738_000_000,
+      reencoded: "leP46s4u2yD00vLN0Gf00vLN0Gc="
+    },
+    python: %{
+      hash: 2_367_537_495_353_648_021,
+      pathway_start: 1_780_345_623_738,
+      edge_start: 1_780_345_623_738,
+      reencoded: "leP46s4u2yD00vLN0Gf00vLN0Gc="
+    }
+  },
+  %{
+    provenance:
+      "Pathway{hash: 2367537495353648021, pathway_start: 1700000000000, edge_start: 1700003600000}",
+    hash: 2_367_537_495_353_648_021,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000,
+    base64: "leP46s4u2yCAoKv++WKA2uKB+mI=",
+    go: %{
+      hash: 2_367_537_495_353_648_021,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "leP46s4u2yCAoKv++WKA2uKB+mI="
+    },
+    java: %{
+      hash: 2_367_537_495_353_648_021,
+      start_nanos: 1_700_000_000_000_000_000,
+      reencoded: "leP46s4u2yCAoKv++WKA2uKB+mI="
+    },
+    python: %{
+      hash: 2_367_537_495_353_648_021,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "leP46s4u2yCAoKv++WKA2uKB+mI="
+    }
+  },
+  %{
+    provenance:
+      "Pathway{hash: 18446744073709551615, pathway_start: 1780345623738, edge_start: 1780345624738}",
+    hash: 18_446_744_073_709_551_615,
+    pathway_start: 1_780_345_623_738,
+    edge_start: 1_780_345_624_738,
+    base64: "///////////00vLN0GfE4vLN0Gc=",
+    go: %{
+      hash: 18_446_744_073_709_551_615,
+      pathway_start: 1_780_345_623_738,
+      edge_start: 1_780_345_624_738,
+      reencoded: "///////////00vLN0GfE4vLN0Gc="
+    },
+    java: %{
+      hash: -1,
+      start_nanos: 1_780_345_623_738_000_000,
+      reencoded: "///////////00vLN0GfE4vLN0Gc="
+    },
+    python: %{
+      hash: 18_446_744_073_709_551_615,
+      pathway_start: 1_780_345_623_738,
+      edge_start: 1_780_345_624_738,
+      reencoded: "///////////00vLN0GfE4vLN0Gc="
+    }
+  },
+  %{
+    provenance:
+      "Pathway{hash: 81985529216486895, pathway_start: 1700000000000, edge_start: 1700003600000}",
+    hash: 81_985_529_216_486_895,
+    pathway_start: 1_700_000_000_000,
+    edge_start: 1_700_003_600_000,
+    base64: "782riWdFIwGAoKv++WKA2uKB+mI=",
+    go: %{
+      hash: 81_985_529_216_486_895,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "782riWdFIwGAoKv++WKA2uKB+mI="
+    },
+    java: %{
+      hash: 81_985_529_216_486_895,
+      start_nanos: 1_700_000_000_000_000_000,
+      reencoded: "782riWdFIwGAoKv++WKA2uKB+mI="
+    },
+    python: %{
+      hash: 81_985_529_216_486_895,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000,
+      reencoded: "782riWdFIwGAoKv++WKA2uKB+mI="
+    }
+  },
+  %{
+    provenance:
+      "Pathway{hash: 234, pathway_start: 72057594037927936, edge_start: 72057594037927936}",
+    hash: 234,
+    pathway_start: 72_057_594_037_927_936,
+    edge_start: 72_057_594_037_927_936,
+    base64: "6gAAAAAAAACAgICAgICAgAKAgICAgICAgAI=",
+    go: %{
+      hash: 234,
+      pathway_start: 4_611_686_018_427,
+      edge_start: 4_611_686_018_427,
+      reencoded: "6gAAAAAAAAD2tcHet4wC9rXB3reMAg=="
+    },
+    java: %{
+      hash: 234,
+      start_nanos: 9_223_372_036_854_775_807,
+      reencoded: "6gAAAAAAAADs64K975gE7OuCve+YBA=="
+    },
+    python: %{
+      hash: 234,
+      pathway_start: 72_057_594_037_927_936,
+      edge_start: 72_057_594_037_927_936,
+      reencoded: "6gAAAAAAAACAgICAgICAgAKAgICAgICAgAI="
+    }
+  }
+]
