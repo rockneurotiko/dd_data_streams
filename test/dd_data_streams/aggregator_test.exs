@@ -1,7 +1,10 @@
 defmodule DdDataStreams.AggregatorTest do
   use ExUnit.Case, async: false
 
+  use Mimic
+
   alias DdDataStreams.Aggregator
+  alias DdDataStreams.Transport
 
   @moduletag :capture_log
 
@@ -52,22 +55,6 @@ defmodule DdDataStreams.AggregatorTest do
   # own payload capture.
   @zero_sample_sketch "0a1209000000000040f03f1100d88afe9e04fe3f12001a0021000000000000f03f"
 
-  defmodule FakeTransport do
-    @behaviour DdDataStreams.Transport
-
-    @impl true
-    def post(url, headers, body) do
-      Agent.update(:aggregator_test_transport, fn state ->
-        %{state | calls: [{url, headers, body} | state.calls]}
-      end)
-
-      case Agent.get(:aggregator_test_transport, & &1.response) do
-        {:raise, exception} -> raise exception
-        response -> response
-      end
-    end
-  end
-
   setup do
     variables =
       ~w(DD_SERVICE DD_ENV DD_VERSION DD_PRIMARY_TAG DD_DATA_STREAMS_ENABLED) ++
@@ -86,14 +73,15 @@ defmodule DdDataStreams.AggregatorTest do
       end
     end)
 
-    start_supervised!(%{
-      id: :transport,
-      start:
-        {Agent, :start_link,
-         [fn -> %{response: {:ok, 202}, calls: []} end, [name: :aggregator_test_transport]]}
-    })
-
     test = self()
+
+    # The aggregator posts from its own process, so the stub is set here and
+    # allowed into that process by start_aggregator/0.
+    stub(Transport.Req, :post, fn url, headers, body ->
+      send(test, {:post, url, headers, body})
+      {:ok, 202}
+    end)
+
     handler = "flush-error-#{System.unique_integer([:positive])}"
 
     :telemetry.attach(
@@ -111,14 +99,21 @@ defmodule DdDataStreams.AggregatorTest do
   end
 
   defp start_aggregator do
-    start_supervised!({Aggregator, transport: FakeTransport})
+    pid = start_supervised!({Aggregator, []})
+    allow(Transport.Req, self(), pid)
+    pid
+  end
+
+  defp respond_with({:raise, exception}) do
+    stub(Transport.Req, :post, fn _url, _headers, _body -> raise exception end)
   end
 
   defp respond_with(response) do
-    Agent.update(:aggregator_test_transport, &%{&1 | response: response})
+    stub(Transport.Req, :post, fn _url, _headers, _body -> response end)
   end
 
-  defp calls, do: Agent.get(:aggregator_test_transport, & &1.calls)
+  # Posts since the last call, oldest first.
+  defp posts, do: calls(Transport.Req, :post, 3)
 
   defp hex(string), do: Base.decode16!(String.replace(string, ~r/\s/, ""), case: :mixed)
 
@@ -128,7 +123,7 @@ defmodule DdDataStreams.AggregatorTest do
 
     assert :ok = Aggregator.flush()
 
-    assert [{url, headers, body}] = calls()
+    assert [[url, headers, body]] = posts()
     assert url == "http://localhost:8126/v0.1/pipeline_stats"
     assert {"content-type", "application/msgpack"} in headers
     assert {"content-encoding", "gzip"} in headers
@@ -142,11 +137,11 @@ defmodule DdDataStreams.AggregatorTest do
     Aggregator.add(checkpoint)
 
     Aggregator.flush()
-    assert calls() == []
+    assert posts() == []
 
     GenServer.stop(pid)
 
-    assert [{_url, _headers, body}] = calls()
+    assert [[_url, _headers, body]] = posts()
     assert :zlib.gunzip(body) =~ "subscription:orders-sub"
   end
 
@@ -156,8 +151,35 @@ defmodule DdDataStreams.AggregatorTest do
 
     assert :ok = Aggregator.flush()
 
-    assert [{_url, _headers, body}] = calls()
+    assert [[_url, _headers, body]] = posts()
     assert :zlib.gunzip(body) =~ hex(@zero_sample_sketch)
+  end
+
+  test "a checkpoint stamped far in the future is dropped instead of held forever" do
+    pid = start_aggregator()
+
+    far_future = System.system_time(:millisecond) + 3_600_000
+    Aggregator.add(%{@checkpoint | timestamp: far_future})
+
+    assert :ok = Aggregator.flush()
+
+    assert posts() == []
+    assert %{buckets: %{}} = :sys.get_state(pid)
+  end
+
+  test "a checkpoint within clock skew is kept and flushed on shutdown" do
+    pid = start_aggregator()
+
+    # Ten seconds ahead is broker skew, not a bad timestamp.
+    Aggregator.add(%{@checkpoint | timestamp: System.system_time(:millisecond) + 10_000})
+
+    assert :ok = Aggregator.flush()
+    assert posts() == []
+
+    GenServer.stop(pid)
+
+    assert [[_url, _headers, body]] = posts()
+    assert :zlib.gunzip(body) =~ "subscription:orders-sub"
   end
 
   test "a checkpoint added after a flush is still aggregated and flushed" do
@@ -166,14 +188,14 @@ defmodule DdDataStreams.AggregatorTest do
     Aggregator.add(@checkpoint)
     assert :ok = Aggregator.flush()
 
-    assert [{_url, _headers, _pre}] = calls()
+    assert [[_url, _headers, pre_flush]] = posts()
     assert Process.alive?(pid)
 
     Aggregator.add(@checkpoint)
     Aggregator.add(%{@checkpoint | hash: 42})
     assert :ok = Aggregator.flush()
 
-    assert [{_url1, _headers1, post_flush}, {_url2, _headers2, pre_flush}] = calls()
+    assert [[_url2, _headers2, post_flush]] = posts()
     assert Process.alive?(pid)
     assert point_count(pre_flush) == 2
     assert point_count(post_flush) == 4
@@ -195,10 +217,10 @@ defmodule DdDataStreams.AggregatorTest do
                     %{service: "checkout"}}
 
     assert Process.alive?(pid)
-    assert [_call] = calls()
+    assert [_call] = posts()
 
     Aggregator.flush()
-    assert [_call] = calls()
+    assert posts() == []
     refute_receive {:flush_error, _event, _measurements, _metadata}
   end
 
@@ -213,7 +235,7 @@ defmodule DdDataStreams.AggregatorTest do
                     %{service: "checkout", reason: :econnrefused}}
 
     assert Process.alive?(pid)
-    assert [_failed] = calls()
+    assert [_failed] = posts()
 
     # The dropped bucket must not come back: this flush carries only the
     # checkpoint added after the failure, one point per timestamp family.
@@ -222,7 +244,7 @@ defmodule DdDataStreams.AggregatorTest do
 
     assert :ok = Aggregator.flush()
 
-    assert [{_url, _headers, body}, _failed] = calls()
+    assert [[_url, _headers, body]] = posts()
     assert point_count(body) == 2
     assert :zlib.gunzip(body) =~ "subscription:orders-sub"
     assert Process.alive?(pid)

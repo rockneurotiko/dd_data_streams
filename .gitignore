@@ -13,6 +13,12 @@
 # Temporary files, for example, from tests.
 /tmp/
 
+# The end-to-end harness is a Mix project of its own.
+/e2e/_build/
+/e2e/deps/
+/e2e/capture-*/
+/e2e/decoder/.venv/
+
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
 

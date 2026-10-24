@@ -6,13 +6,16 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   # produces, and the reply goes back onto the broker through the library's own
   # publish path.
   #
-  # The emulator is not part of the default suite, so this file skips itself
-  # unless PUBSUB_EMULATOR_HOST names a running one. The project must be the one
-  # the emulator was started with, because it rejects any other:
+  # The emulator is not part of the default suite: this is the `emulator` tier,
+  # excluded from `mix test` and run with
   #
-  #   docker run -d -p 127.0.0.1:8091:8091 gcr.io/google.com/cloudsdktool/cloud-sdk:582.0.0-emulators \
-  #     gcloud beta emulators pubsub start --project=dsm-test --host-port=0.0.0.0:8091
-  #   PUBSUB_EMULATOR_HOST=127.0.0.1:8091 mix test test/integration/pubsub_emulator_test.exs
+  #   PUBSUB_EMULATOR_HOST=127.0.0.1:8085 mix test --only emulator
+  #
+  # The project must be the one the emulator was started with, because it rejects
+  # any other:
+  #
+  #   docker run -d -p 127.0.0.1:8085:8085 gcr.io/google.com/cloudsdktool/cloud-sdk:582.0.0-emulators \
+  #     gcloud beta emulators pubsub start --project=dsm-test --host-port=0.0.0.0:8085
   #
   # DSM_PAYLOAD_DECODER may name a command that takes the path of a captured
   # pipeline stats body, decodes it and prints it. `e2e/decoder/decode` is that
@@ -26,10 +29,15 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   # a dependency, so its message metadata is built by hand.
   use ExUnit.Case, async: false
 
+  use Mimic
+
   alias DdDataStreams.Aggregator
   alias DdDataStreams.Context
   alias DdDataStreams.Pathway
   alias DdDataStreams.Propagator
+  alias DdDataStreams.Transport
+
+  @moduletag :emulator
 
   @emulator System.get_env("PUBSUB_EMULATOR_HOST")
   @project System.get_env("PUBSUB_EMULATOR_PROJECT", "dsm-test")
@@ -37,11 +45,6 @@ defmodule DdDataStreams.PubSubEmulatorTest do
            nil -> ""
            host -> "http://" <> host
          end)
-
-  if is_nil(@emulator) do
-    @moduletag skip:
-                 "set PUBSUB_EMULATOR_HOST (for example 127.0.0.1:8091) to run the emulator tests"
-  end
 
   @reference Path.expand("../fixtures/interop/reference_decoders.txt", __DIR__)
              |> File.read!()
@@ -60,22 +63,20 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   @consume_latency_ms 250
 
   # The aggregator is reached by its registered name. This transport records the
-  # request the agent would have received instead of sending it.
-  defmodule Capture do
-    @behaviour DdDataStreams.Transport
-
-    @impl true
-    def post(url, headers, body) do
-      send(
-        :persistent_term.get({__MODULE__, :recipient}),
-        {:flush, url, headers, IO.iodata_to_binary(body)}
-      )
-
-      {:ok, 202}
-    end
-  end
+  # request the agent would have received instead of sending it; the stub below
+  # replaces it, and is allowed into the aggregator's own process.
 
   setup_all do
+    if @emulator in [nil, ""] do
+      raise """
+      PUBSUB_EMULATOR_HOST is not set, so there is no broker to talk to.
+
+      Start the Pub/Sub emulator (see e2e/README.md) and run:
+
+          PUBSUB_EMULATOR_HOST=127.0.0.1:8085 mix test --only emulator
+      """
+    end
+
     {:ok, _apps} = Application.ensure_all_started(:req)
     :ok
   end
@@ -102,7 +103,12 @@ defmodule DdDataStreams.PubSubEmulatorTest do
     assert put_subscription(names.in_subscription, names.in_topic) == 200
     assert put_subscription(names.out_subscription, names.out_topic) == 200
 
-    :persistent_term.put({Capture, :recipient}, self())
+    test = self()
+
+    stub(Transport.Req, :post, fn url, headers, body ->
+      send(test, {:flush, url, headers, IO.iodata_to_binary(body)})
+      {:ok, 202}
+    end)
 
     on_exit(fn ->
       Context.clear()
@@ -133,7 +139,8 @@ defmodule DdDataStreams.PubSubEmulatorTest do
 
   test "a received message yields a consume checkpoint and the reply carries the pathway",
        %{names: names} do
-    started = start_supervised!({Aggregator, transport: Capture})
+    started = start_supervised!({Aggregator, []})
+    allow(Transport.Req, self(), started)
 
     attributes = %{"dd-pathway-ctx-base64" => @header.base64}
 

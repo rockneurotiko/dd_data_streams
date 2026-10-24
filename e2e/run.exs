@@ -22,7 +22,7 @@ defmodule E2e.Token do
 end
 
 defmodule E2e.PubSub do
-  @base "http://127.0.0.1:8091"
+  @base "http://127.0.0.1:8085"
 
   def create_topic(topic) do
     Req.put!("#{@base}/v1/projects/dsm-test/topics/#{topic}",
@@ -65,6 +65,13 @@ defmodule E2e.PubSub do
   end
 end
 
+defmodule E2e.Observed do
+  # What the pipeline saw, so the run can be checked instead of only printed.
+  def init, do: :persistent_term.put(__MODULE__, [])
+  def put(entry), do: :persistent_term.put(__MODULE__, [entry | entries()])
+  def entries, do: :persistent_term.get(__MODULE__, [])
+end
+
 defmodule E2e.Pipeline do
   use Broadway
 
@@ -74,7 +81,8 @@ defmodule E2e.Pipeline do
     IO.puts("metadata: #{inspect(message.metadata, pretty: true, limit: :infinity)}")
 
     attributes = message.metadata.attributes || %{}
-    IO.puts("decoded inbound pathway: #{inspect(DdDataStreams.Propagator.get(attributes))}")
+    inbound = DdDataStreams.Propagator.get(attributes)
+    IO.puts("decoded inbound pathway: #{inspect(inbound)}")
 
     {_pathway, checkpoint} =
       DdDataStreams.consume(
@@ -95,6 +103,14 @@ defmodule E2e.Pipeline do
       %{data: "reply:#{message.data}", attributes: %{}, ordering_key: nil},
       fn outgoing ->
         IO.puts("produce attributes: #{inspect(outgoing.attributes)}")
+
+        E2e.Observed.put(%{
+          data: message.data,
+          inbound: inbound,
+          checkpoint: checkpoint,
+          produce: outgoing.attributes
+        })
+
         E2e.PubSub.publish(E2e.Resources.out_topic(), outgoing)
       end
     )
@@ -104,9 +120,88 @@ defmodule E2e.Pipeline do
 end
 
 defmodule E2e.FlushErrors do
+  def init, do: :persistent_term.put(__MODULE__, 0)
+
   def handle(event, measurements, metadata, _config) do
     IO.puts("flush error: #{inspect({event, measurements, metadata})}")
+    :persistent_term.put(__MODULE__, count() + 1)
   end
+
+  def count, do: :persistent_term.get(__MODULE__, 0)
+end
+
+defmodule E2e.Verify do
+  # What the run has to be able to state, rather than what it prints. A failure
+  # here is a broken pipeline, so the script exits non-zero.
+  def run!(out_messages, captured, decoder_output) do
+    observed = E2e.Observed.entries()
+    entries = Map.new(observed, &{&1.data, &1})
+
+    check!(map_size(entries) == 2, "expected two consumed messages, saw #{inspect(map_size(entries))}")
+
+    with_header = entries["hello-with-header"]
+    without_header = entries["hello-no-header"]
+    check!(with_header != nil and without_header != nil, "a message was not consumed")
+
+    inbound = with_header.inbound
+    check!(inbound != nil, "the dd-trace-go header did not decode")
+    check!(with_header.checkpoint.parent_hash == inbound.hash, "the consume checkpoint does not chain onto the inbound pathway")
+    check!(without_header.checkpoint.parent_hash == 0, "a message without a header did not start a new pathway")
+
+    for {_data, entry} <- entries do
+      tags = entry.checkpoint.tags
+      check!("direction:in" in tags, "a consume checkpoint is missing direction:in")
+      check!("type:google-pubsub" in tags, "a consume checkpoint is missing type:google-pubsub")
+
+      encoded = entry.produce["dd-pathway-ctx-base64"]
+      check!(encoded != nil, "a published message carries no pathway attribute")
+
+      expected =
+        DdDataStreams.Pathway.node_hash("checkout", "prod", nil, [
+          "direction:out",
+          "topic:#{E2e.Resources.out_topic()}",
+          "type:google-pubsub"
+        ])
+        |> then(&DdDataStreams.Pathway.pathway_hash(&1, entry.checkpoint.hash))
+
+      {:ok, decoded} = DdDataStreams.Propagator.decode_str(encoded)
+      check!(decoded.hash == expected, "the produce header does not chain onto the consume checkpoint")
+
+      if entry.inbound do
+        check!(
+          decoded.pathway_start == entry.inbound.pathway_start,
+          "the produce header moved the pathway start"
+        )
+      end
+    end
+
+    published = Enum.map(out_messages, & &1["message"]["attributes"]["dd-pathway-ctx-base64"])
+    check!(length(published) == 2, "expected two messages on the out topic, saw #{length(published)}")
+    check!(Enum.all?(published, &is_binary/1), "a published message reached the broker without a pathway attribute")
+
+    check!(captured != [], "the aggregator flushed nothing to the agent")
+    check!(E2e.FlushErrors.count() == 0, "the aggregator reported #{E2e.FlushErrors.count()} flush errors")
+
+    if decoder_output do
+      for tag <- ["direction:in", "direction:out", "type:google-pubsub"] do
+        check!(String.contains?(decoder_output, tag), "the decoder did not find #{tag} in the payload")
+      end
+
+      for {_data, entry} <- entries do
+        for hash <- [entry.checkpoint.hash, entry.checkpoint.parent_hash], hash > 0 do
+          check!(
+            String.contains?(decoder_output, Integer.to_string(hash)),
+            "the payload the agent would receive does not contain hash #{hash}"
+          )
+        end
+      end
+    end
+
+    IO.puts("\n== VERIFIED ==")
+  end
+
+  defp check!(true, _message), do: :ok
+  defp check!(false, message), do: raise("verification failed: #{message}")
 end
 
 E2e.Resources.init!()
@@ -127,6 +222,16 @@ Application.put_env(:dd_data_streams, :transport, E2e.Capture)
 {:ok, _} = Application.ensure_all_started(:dd_data_streams)
 {:ok, _} = Application.ensure_all_started(:broadway)
 
+E2e.Observed.init()
+E2e.FlushErrors.init()
+
+:telemetry.attach(
+  "capture-flush",
+  [:dd_data_streams, :flush, :error],
+  &E2e.FlushErrors.handle/4,
+  nil
+)
+
 E2e.PubSub.create_topic(E2e.Resources.in_topic())
 E2e.PubSub.create_topic(E2e.Resources.out_topic())
 E2e.PubSub.create_subscription(E2e.Resources.sub(), E2e.Resources.in_topic())
@@ -141,7 +246,7 @@ DdDataStreams.attach([])
       module:
         {BroadwayCloudPubSub.Pull.Producer,
          subscription: E2e.Resources.sub_resource(),
-         base_url: "http://127.0.0.1:8091",
+         base_url: "http://127.0.0.1:8085",
          token_generator: {E2e.Token, :fetch, []},
          receive_interval: 200},
       concurrency: 1
@@ -193,36 +298,35 @@ end
 
 IO.puts("\n== TELEMETRY ==")
 
-:telemetry.attach(
-  "capture-flush",
-  [:dd_data_streams, :flush, :error],
-  &E2e.FlushErrors.handle/4,
-  nil
-)
-
 # Stopping the aggregator flushes every bucket, including the partial one.
 GenServer.stop(DdDataStreams.Aggregator)
 Process.sleep(500)
 
 files = Path.wildcard(Path.join(System.get_env("CAPTURE_DIR"), "*.bin"))
-IO.puts("\ncaptured payloads: #{inspect(files)}")
+IO.puts("captured payloads: #{inspect(files)}")
 
 latest = files |> Enum.sort() |> List.last()
 
 decoder = Path.join(__DIR__, "decoder/decode")
 venv = Path.join(__DIR__, "decoder/.venv/bin/python")
 
-if File.exists?(latest) and File.exists?(venv) do
-  {output, status} = System.cmd(decoder, [latest], stderr_to_stdout: true)
+decoder_output =
+  if File.exists?(latest) and File.exists?(venv) do
+    {output, status} = System.cmd(decoder, [latest], stderr_to_stdout: true)
 
-  IO.puts("\n== REFERENCE DECODER (dd-trace-py toolchain) ==")
-  IO.puts(output)
+    IO.puts("\n== REFERENCE DECODER (dd-trace-py toolchain) ==")
+    IO.puts(output)
 
-  if status != 0, do: raise("reference decoder rejected #{latest}")
-else
-  IO.puts("""
-  reference decoder skipped: set up decoder/.venv first
-    cd decoder && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-  then run decoder/decode #{latest || "<captured.bin>"}
-  """)
-end
+    if status != 0, do: raise("reference decoder rejected #{latest}")
+    output
+  else
+    IO.puts("""
+    reference decoder not run: set up decoder/.venv first
+      cd decoder && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+    then run decoder/decode #{latest || "<captured.bin>"}
+    """)
+
+    nil
+  end
+
+E2e.Verify.run!(out["receivedMessages"] || [], files, decoder_output)

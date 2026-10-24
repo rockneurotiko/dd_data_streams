@@ -1,36 +1,37 @@
 defmodule DdDataStreams.AgentTest do
-  # Posts a flushed payload to a real Datadog Agent, which is the only check that
-  # the pipeline stats schema is accepted by something other than this library.
-  # No agent runs in the default suite, so this file skips itself unless
-  # DD_TRACE_AGENT_URL names one (for example http://127.0.0.1:8126).
+  # Posts a flushed payload to a Datadog Agent. The agent does not decode the
+  # body: /v0.1/pipeline_stats is a reverse proxy to the pipeline stats intake on
+  # DD_SITE, so the status this test sees is the intake's own answer. That is
+  # what makes it worth running: a 202 means the backend accepted the schema, a
+  # 500 means the agent has no API key to forward with, and a 4xx is the intake
+  # rejecting the payload.
   #
-  # The transport is the library's own Req implementation, wrapped only to report
-  # the status the agent answered with. The agent accepts every status below 400
-  # for /v0.1/pipeline_stats; 202 Accepted is what a working intake answers, and
-  # that is what is asserted here.
+  # This is the `agent` tier: excluded from `mix test`, run with
+  #
+  #   DD_TRACE_AGENT_URL=http://127.0.0.1:8126 mix test --only agent
+  #
+  # e2e/stub_agent.exs answers 202 for a machine with no agent, which proves the
+  # transport but not that the schema is accepted.
   use ExUnit.Case, async: false
 
+  use Mimic
+
   alias DdDataStreams.Aggregator
+  alias DdDataStreams.Transport
 
-  @agent System.get_env("DD_TRACE_AGENT_URL")
-
-  if is_nil(@agent) do
-    @moduletag skip:
-                 "set DD_TRACE_AGENT_URL (for example http://127.0.0.1:8126) to post to an agent"
-  end
-
-  defmodule Reporting do
-    @behaviour DdDataStreams.Transport
-
-    @impl true
-    def post(url, headers, body) do
-      result = DdDataStreams.Transport.Req.post(url, headers, body)
-      send(:persistent_term.get({__MODULE__, :recipient}), {:agent_response, result})
-      result
-    end
-  end
+  @moduletag :agent
 
   setup_all do
+    if System.get_env("DD_TRACE_AGENT_URL") in [nil, ""] do
+      raise """
+      DD_TRACE_AGENT_URL is not set, so there is no agent to post to.
+
+      Start an agent (a real one, or e2e/stub_agent.exs) and run:
+
+          DD_TRACE_AGENT_URL=http://127.0.0.1:8126 mix test --only agent
+      """
+    end
+
     {:ok, _apps} = Application.ensure_all_started(:req)
     :ok
   end
@@ -43,8 +44,18 @@ defmodule DdDataStreams.AgentTest do
     System.put_env("DD_ENV", "prod")
     System.put_env("DD_DATA_STREAMS_ENABLED", "true")
 
-    :persistent_term.put({Reporting, :recipient}, self())
-    start_supervised!({Aggregator, transport: Reporting})
+    test = self()
+
+    # The real transport is the point of this tier, so the expectation calls the
+    # original: it only reports the status the agent answered with.
+    expect(Transport.Req, :post, fn url, headers, body ->
+      result = call_original(Transport.Req, :post, [url, headers, body])
+      send(test, {:agent_response, result})
+      result
+    end)
+
+    aggregator = start_supervised!({Aggregator, []})
+    allow(Transport.Req, self(), aggregator)
 
     on_exit(fn ->
       for {name, value} <- previous do

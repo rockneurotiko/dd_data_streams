@@ -1,14 +1,10 @@
 defmodule DdDataStreams.ApplicationTest do
   use ExUnit.Case, async: false
 
+  @moduletag :capture_log
+
   alias DdDataStreams.Aggregator
-
-  defmodule FakeTransport do
-    @behaviour DdDataStreams.Transport
-
-    @impl true
-    def post(_url, _headers, _body), do: {:ok, 202}
-  end
+  alias DdDataStreams.Transport
 
   setup do
     previous = System.get_env("DD_DATA_STREAMS_ENABLED")
@@ -46,17 +42,47 @@ defmodule DdDataStreams.ApplicationTest do
     assert Process.alive?(replacement)
   end
 
-  test "the aggregator uses the transport configured for the library" do
+  test "the aggregator posts through the transport module configured for it" do
     System.put_env("DD_DATA_STREAMS_ENABLED", "true")
-    Application.put_env(:dd_data_streams, :transport, FakeTransport)
+
+    # The behaviour has no post/3 of its own, so naming it as the transport makes
+    # the flush fail in a way that says which module the aggregator really used.
+    Application.put_env(:dd_data_streams, :transport, Transport)
     on_exit(fn -> Application.delete_env(:dd_data_streams, :transport) end)
+
+    test = self()
+
+    :telemetry.attach(
+      "application-transport",
+      [:dd_data_streams, :flush, :error],
+      fn _event, _measurements, metadata, _config -> send(test, {:flush_error, metadata}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach("application-transport") end)
 
     supervisor = start_application()
 
     assert [{Aggregator, aggregator, :worker, [Aggregator]}] =
              Supervisor.which_children(supervisor)
 
-    assert :sys.get_state(aggregator).transport == FakeTransport
+    assert :sys.get_state(aggregator).transport == Transport
+
+    # Complete bucket, so the flush has something to post.
+    Aggregator.add(%{
+      hash: 1,
+      parent_hash: 0,
+      tags: ["direction:in"],
+      timestamp: System.system_time(:millisecond) - 15_000,
+      pathway_latency: 1,
+      edge_latency: 1,
+      payload_size: 1
+    })
+
+    assert :ok = Aggregator.flush()
+
+    assert_receive {:flush_error,
+                    %{reason: %UndefinedFunctionError{module: Transport, function: :post}}}
   end
 
   test "a disabled application starts no aggregator at all" do

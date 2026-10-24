@@ -32,6 +32,10 @@ defmodule DdDataStreams.Aggregator do
   alias DdDataStreams.Sketch
 
   @bucket_duration_ns 10_000_000_000
+
+  # How far a checkpoint may sit in the future before its bucket is dropped
+  # instead of kept: a minute is well past any broker clock skew.
+  @future_horizon_ns 60_000_000_000
   @flush_interval_ms 10_000
   @headers [{"content-type", "application/msgpack"}, {"content-encoding", "gzip"}]
   @error_event [:dd_data_streams, :flush, :error]
@@ -195,9 +199,14 @@ defmodule DdDataStreams.Aggregator do
 
   defp flush_due(state, now_ns) do
     cutoff = if now_ns == :infinity, do: :infinity, else: now_ns - @bucket_duration_ns
+    horizon = if now_ns == :infinity, do: :infinity, else: now_ns + @future_horizon_ns
 
     {due, buckets} =
       Map.split_with(state.buckets, fn {{_f, _s, start}, _} -> due?(start, cutoff) end)
+
+    # A checkpoint stamped far in the future (a replayed message, a skewed clock)
+    # would never become due and would be held until the process stops.
+    buckets = Map.reject(buckets, fn {{_f, _s, start}, _} -> start > horizon end)
 
     due
     |> Enum.group_by(fn {{_family, service, _start}, _points} -> service end)
@@ -242,21 +251,19 @@ defmodule DdDataStreams.Aggregator do
   end
 
   defp post(transport, service, payload) do
-    try do
-      body = Payload.encode(payload) |> IO.iodata_to_binary() |> :zlib.gzip()
-      url = Config.agent_url(System.get_env()) <> "/v0.1/pipeline_stats"
+    body = Payload.encode(payload) |> IO.iodata_to_binary() |> :zlib.gzip()
+    url = Config.agent_url(System.get_env()) <> "/v0.1/pipeline_stats"
 
-      case transport.post(url, @headers, body) do
-        {:ok, status} when status < 400 -> :ok
-        {:ok, status} -> failed(service, {:http_status, status})
-        {:error, reason} -> failed(service, reason)
-        other -> failed(service, {:unexpected_response, other})
-      end
-    rescue
-      error -> failed(service, error)
-    catch
-      kind, reason -> failed(service, {kind, reason})
+    case transport.post(url, @headers, body) do
+      {:ok, status} when status < 400 -> :ok
+      {:ok, status} -> failed(service, {:http_status, status})
+      {:error, reason} -> failed(service, reason)
+      other -> failed(service, {:unexpected_response, other})
     end
+  rescue
+    error -> failed(service, error)
+  catch
+    kind, reason -> failed(service, {kind, reason})
   end
 
   defp failed(service, reason) do

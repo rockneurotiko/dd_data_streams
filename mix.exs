@@ -5,9 +5,11 @@ defmodule DdDataStreams.MixProject do
     [
       app: :dd_data_streams,
       version: "0.1.0",
-      elixir: "~> 1.19",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      aliases: aliases(),
+      test_coverage: [summary: [threshold: 90]]
     ]
   end
 
@@ -27,7 +29,25 @@ defmodule DdDataStreams.MixProject do
       {:telemetry, "~> 1.0"},
       # The default agent transport talks HTTP through Req. It is optional so an
       # application that passes its own transport does not pull in an HTTP client.
-      {:req, "~> 0.5", optional: true}
+      {:req, "~> 0.5", optional: true},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:mimic, "~> 1.7", only: :test}
+    ]
+  end
+
+  # What CI runs, so a contributor can run the same thing locally.
+  def cli do
+    [preferred_envs: [ci: :test]]
+  end
+
+  defp aliases do
+    [
+      ci: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "test --cover"
+      ]
     ]
   end
 end

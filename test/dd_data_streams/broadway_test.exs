@@ -5,9 +5,11 @@ defmodule DdDataStreams.BroadwayTest do
   # with the measurements and metadata those two stages build.
   use ExUnit.Case, async: false
 
+  use Mimic
+
   doctest DdDataStreams.Context
 
-  alias DdDataStreams.{Context, Pathway, Propagator}
+  alias DdDataStreams.{Aggregator, Context, Pathway, Propagator}
 
   @consume_event [:broadway, :processor, :message, :start]
   @fan_in_event [:broadway, :batch_processor, :start]
@@ -27,26 +29,6 @@ defmodule DdDataStreams.BroadwayTest do
 
   @absent :absent
 
-  # The aggregator is reached by its registered name, so a process with that
-  # name records the checkpoints the library would have handed it instead of
-  # requiring the real aggregator, its buckets and a fake transport.
-  defmodule Recorder do
-    use GenServer
-
-    def start_link(test) do
-      GenServer.start_link(__MODULE__, test, name: DdDataStreams.Aggregator)
-    end
-
-    @impl true
-    def init(test), do: {:ok, test}
-
-    @impl true
-    def handle_cast({:add, checkpoint}, test) do
-      send(test, {:checkpoint, checkpoint})
-      {:noreply, test}
-    end
-  end
-
   setup do
     variables =
       ~w(DD_SERVICE DD_ENV DD_PRIMARY_TAG DD_DATA_STREAMS_ENABLED)
@@ -60,7 +42,12 @@ defmodule DdDataStreams.BroadwayTest do
 
     detach_all()
     Context.clear()
-    start_supervised!({Recorder, self()})
+
+    # The handlers run in the process that emits the telemetry event, which is
+    # this one, so a private-mode stub records the checkpoints the library hands
+    # the aggregator without an aggregator or a transport in the way.
+    test = self()
+    stub(Aggregator, :add, fn checkpoint -> send(test, {:checkpoint, checkpoint}) end)
 
     on_exit(fn ->
       detach_all()

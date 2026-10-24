@@ -16,7 +16,12 @@ Pub/Sub or network dependency, and `mix compile`, `mix test`, `mix format` and
   `publish/3` records the produce checkpoint and injects
   `dd-pathway-ctx-base64` into a message published to a second topic. The
   capture transport writes the flushed body to disk instead of posting it, so
-  the run is observable without an agent.
+  the run is observable without an agent. At the end it *checks* what happened —
+  the consume checkpoint chains onto the inbound hash, the produce header chains
+  onto the consume checkpoint, both replies reach the broker with the attribute,
+  nothing failed to flush, and the decoded payload carries both hashes — and
+  exits non-zero when any of that is missing. Printing is for the reader; the
+  exit status is what CI uses.
 - `lib/e2e/capture.ex` — the transport the script installs before the
   application starts. It saves the exact bytes and headers the agent would have
   received.
@@ -43,9 +48,9 @@ emulator rejects any other project:
 
 ```sh
 docker run --rm -d --name dsm-e2e-emulator \
-  -p 127.0.0.1:8091:8091 \
+  -p 127.0.0.1:8085:8085 \
   gcr.io/google.com/cloudsdktool/cloud-sdk:582.0.0-emulators \
-  gcloud beta emulators pubsub start --project=dsm-test --host-port=0.0.0.0:8091
+  gcloud beta emulators pubsub start --project=dsm-test --host-port=0.0.0.0:8085
 ```
 
 Fetch the dependencies and run the script:
@@ -103,6 +108,8 @@ attributes: %{"dd-pathway-ctx-base64" => "iEc/sgQzhYOAoKv++WKs/YDTrGg="}
 decoded produce pathway: {:ok, %DdDataStreams.Pathway{hash: 9477037086134454152, ...}}
 
 captured payloads: [".../e2e/capture-1792699014834/1792699018008378.bin"]
+
+== VERIFIED ==
 ```
 
 The second message has no inbound header, so its consume checkpoint has
@@ -158,16 +165,17 @@ sample count of `2` means two consume checkpoints reached that point. The tags,
 the parent/child relationship and the sample counts are stable; the hashes and
 bucket starts change with the run's timestamps.
 
-The same decoder can be handed to the library's emulator test:
+The same decoder can be handed to the library's emulator tier, which is the
+`emulator` ExUnit tag:
 
 ```sh
 cd /home/rock/Git/dd_data_streams
 DSM_PAYLOAD_DECODER=$PWD/e2e/decoder/decode \
-  PUBSUB_EMULATOR_HOST=127.0.0.1:8091 MIX_BUILD_PATH=_build/e2e \
-  mix test test/integration/pubsub_emulator_test.exs
+  PUBSUB_EMULATOR_HOST=127.0.0.1:8085 \
+  mix test --only emulator
 ```
 
-## Exercise the agent acceptance test without an agent
+## Exercise the agent tier without an agent
 
 ```sh
 cd e2e
@@ -178,8 +186,7 @@ In another shell:
 
 ```sh
 cd /home/rock/Git/dd_data_streams
-DD_TRACE_AGENT_URL=http://127.0.0.1:8126 MIX_BUILD_PATH=_build/e2e \
-  mix test test/integration/agent_test.exs
+DD_TRACE_AGENT_URL=http://127.0.0.1:8126 mix test --only agent
 ```
 
 The test posts a flushed payload with the library's Req transport and asserts
@@ -191,6 +198,12 @@ accepts anything.
 - The stub agent is not a real agent. It validates nothing; a `202` from it
   shows the request was sent and the status handled, not that the pipeline stats
   schema is accepted by Datadog.
+- A real agent does not decode the body either: `/v0.1/pipeline_stats` is a
+  reverse proxy to the intake on `DD_SITE`, and the status the test sees is the
+  intake's answer. So a keyed agent proves acceptance by the backend, while a
+  keyless agent answers `500` (`Pipeline stats forwarder is OFF`) and proves
+  nothing about the payload. That keyed run is manual: CI uses the stub, because
+  the check needs a secret and sends data to a real account.
 - The emulator's streaming surface is unused. The pipeline uses the pull
   producer, and the script's broker calls use the emulator's REST API. The
   client's streaming/gRPC path is not exercised.

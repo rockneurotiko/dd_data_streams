@@ -3,6 +3,7 @@ defmodule DdDataStreams.TransportTest do
 
   alias DdDataStreams.Config
   alias DdDataStreams.Transport
+  alias DdDataStreams.Transport.Req, as: ReqTransport
 
   doctest DdDataStreams.Config
 
@@ -13,21 +14,21 @@ defmodule DdDataStreams.TransportTest do
   end
 
   test "the Req implementation exists exactly when Req is available" do
-    assert Code.ensure_loaded?(DdDataStreams.Transport.Req) == Code.ensure_loaded?(Req)
+    assert Code.ensure_loaded?(ReqTransport) == Code.ensure_loaded?(Req)
   end
 
   if Code.ensure_loaded?(Req) do
     test "the Req implementation implements the behaviour" do
-      assert function_exported?(DdDataStreams.Transport.Req, :post, 3)
+      assert function_exported?(ReqTransport, :post, 3)
 
-      assert Transport in DdDataStreams.Transport.Req.module_info(:attributes)[:behaviour]
+      assert Transport in ReqTransport.module_info(:attributes)[:behaviour]
     end
 
     test "posts the body with the given headers and reports the status" do
       port = serve_once(202)
 
       assert {:ok, 202} =
-               DdDataStreams.Transport.Req.post(
+               ReqTransport.post(
                  "http://127.0.0.1:#{port}/v0.1/pipeline_stats",
                  @headers,
                  ["gzip", "ped"]
@@ -42,7 +43,7 @@ defmodule DdDataStreams.TransportTest do
 
     test "a refused connection is reported as an error" do
       assert {:error, _reason} =
-               DdDataStreams.Transport.Req.post(
+               ReqTransport.post(
                  "http://127.0.0.1:1/v0.1/pipeline_stats",
                  @headers,
                  "body"
