@@ -263,18 +263,33 @@ defmodule DdDataStreams.PayloadTest do
       assert Config.primary_tag() == "region:eu"
     end
 
-    test "the library is disabled unless DD_DATA_STREAMS_ENABLED says otherwise" do
-      refute Config.enabled?()
+    test "the library is enabled unless DD_DATA_STREAMS_ENABLED turns it off" do
+      System.delete_env("DD_DATA_STREAMS_ENABLED")
+      assert Config.enabled?()
 
-      for value <- ["true", "TRUE", "1"] do
+      for value <- ["", "true", "TRUE", "1", "yes"] do
         System.put_env("DD_DATA_STREAMS_ENABLED", value)
-        assert Config.enabled?(), "expected #{inspect(value)} to enable the library"
+        assert Config.enabled?(), "expected #{inspect(value)} to leave the library enabled"
       end
 
-      for value <- ["false", "0", "", "yes"] do
+      for value <- ["false", "FALSE", "0", "no", "off"] do
         System.put_env("DD_DATA_STREAMS_ENABLED", value)
-        refute Config.enabled?(), "expected #{inspect(value)} to leave the library disabled"
+        refute Config.enabled?(), "expected #{inspect(value)} to disable the library"
       end
+
+      # An explicit configuration key decides, whatever the environment says.
+      for {enabled, variable} <- [{false, nil}, {false, "true"}, {true, "false"}] do
+        Application.put_env(:dd_data_streams, :enabled, enabled)
+
+        if variable,
+          do: System.put_env("DD_DATA_STREAMS_ENABLED", variable),
+          else: System.delete_env("DD_DATA_STREAMS_ENABLED")
+
+        assert Config.enabled?() == enabled,
+               "expected enabled: #{inspect(enabled)} to win over #{inspect(variable)}"
+      end
+    after
+      Application.delete_env(:dd_data_streams, :enabled)
     end
   end
 end

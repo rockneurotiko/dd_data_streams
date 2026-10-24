@@ -17,10 +17,11 @@ defmodule DdDataStreams.Application do
   would otherwise be dropped in silence.
 
   Whether it runs at all is decided once, when the application starts, from
-  `DdDataStreams.Config.enabled?/0`. Changing the flag while the application is
-  running neither starts nor stops the aggregator: restart the application to
-  apply it. A disabled library starts no process, so adding the dependency
-  changes nothing until an operator opts in.
+  `DdDataStreams.Config.enabled?/0`, which is on unless it is turned off.
+  Changing the flag while the application is running neither starts nor stops
+  the aggregator: restart the application to apply it. An idle aggregator sends
+  nothing, so a pipeline that has not attached costs one process and no
+  requests.
 
   An aggregator that another application or a test suite already supervises
   under the registered name is left as it is instead of being started twice,

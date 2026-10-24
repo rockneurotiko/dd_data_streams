@@ -24,10 +24,10 @@ defmodule DdDataStreams do
 
   ## Using it in a Broadway pipeline
 
-  The library is off until it is enabled, and a Broadway pipeline reaches it
-  through telemetry instead of through a dependency:
+  A Broadway pipeline reaches the library through telemetry instead of through a
+  dependency, so attaching is the whole integration:
 
-      # DD_DATA_STREAMS_ENABLED=true in the environment, then at start up:
+      # at start up, before Broadway does:
       DdDataStreams.attach()
 
       # in handle_message/3 or handle_batch/4:

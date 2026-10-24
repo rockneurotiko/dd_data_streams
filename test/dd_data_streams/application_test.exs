@@ -86,7 +86,7 @@ defmodule DdDataStreams.ApplicationTest do
   end
 
   test "a disabled application starts no aggregator at all" do
-    System.delete_env("DD_DATA_STREAMS_ENABLED")
+    System.put_env("DD_DATA_STREAMS_ENABLED", "false")
 
     supervisor = start_application()
 

@@ -415,7 +415,7 @@ defmodule DdDataStreams.BroadwayTest do
   end
 
   test "nothing is attached or injected while the library is disabled" do
-    System.delete_env("DD_DATA_STREAMS_ENABLED")
+    System.put_env("DD_DATA_STREAMS_ENABLED", "false")
 
     assert :ok = DdDataStreams.attach()
     assert :telemetry.list_handlers(@consume_event) == []

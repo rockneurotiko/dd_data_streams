@@ -73,12 +73,6 @@ The library requires Elixir 1.17 or later.
 
 ## Usage
 
-The library is off until it is enabled:
-
-```sh
-DD_DATA_STREAMS_ENABLED=true
-```
-
 When the application starts, attach the handlers once, before Broadway starts.
 It takes no options: the configured extractors decide what each message means.
 
@@ -261,7 +255,7 @@ transport and the extractor, which are application configuration.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DD_DATA_STREAMS_ENABLED` | `false` | Turns the library on. `true` or `1`, case-insensitive. |
+| `DD_DATA_STREAMS_ENABLED` | unset, on | Turns the library off when it reads as false: `false`, `0`, `no`, `off`. |
 | `DD_SERVICE` | `unnamed-elixir-service` | The service name reported for this pipeline. |
 | `DD_ENV` | empty | The deployment environment. |
 | `DD_VERSION` | empty | The application version, reported as `Version` in the payload. |
@@ -275,10 +269,12 @@ key is configured here and no authentication header is sent.
 
 ### Application configuration
 
-Two keys are application configuration:
+Three keys are application configuration:
 
 ```elixir
 config :dd_data_streams,
+  # Defaults to true. A boolean here wins over DD_DATA_STREAMS_ENABLED.
+  enabled: true,
   # Defaults to [DdDataStreams.Extractor.GooglePubSub].
   extractors: [MyApp.KafkaExtractor, DdDataStreams.Extractor.GooglePubSub],
   # Defaults to DdDataStreams.Transport.Req when Req is available.
@@ -286,11 +282,26 @@ config :dd_data_streams,
 ```
 
 The extractors are resolved on every attach, publish and consume call, so a
-change applies without a restart. The transport is read when the aggregator starts, so
-a change to it needs an application restart. When the transport key is absent,
-`DdDataStreams.Transport.Req` is used if Req is available.
+change applies without a restart. The transport is read when the aggregator
+starts, so a change to it needs an application restart. When the transport key
+is absent, `DdDataStreams.Transport.Req` is used if Req is available.
 
-### When the enable flag takes effect
+### Turning it off
+
+The library is on as soon as you depend on it: adding the dependency and calling
+`attach/0` is the opt-in. Datadog's other clients default the other way and
+require `DD_DATA_STREAMS_ENABLED=true`, but their tracer is already running and
+data streams monitoring is one more product on top of it, while this library does
+nothing else.
+
+The flag stays supported, as a kill switch an operator can flip without a
+release. Two ways to set it, in this order:
+
+* `config :dd_data_streams, enabled:` when it is a boolean. This wins, which is
+  what makes `config/test.exs` a sensible place to keep the aggregator out of a
+  test suite.
+* otherwise `DD_DATA_STREAMS_ENABLED`, read as false from `false`, `0`, `no` or
+  `off` (case-insensitive). Unset, empty or anything else leaves the library on.
 
 The flag is read in two different places, and the difference matters:
 
@@ -302,8 +313,7 @@ The flag is read in two different places, and the difference matters:
   flag on later leaves handlers recording checkpoints that the aggregator drops
   in silence, and turning it off later leaves the aggregator running.
 
-Set `DD_DATA_STREAMS_ENABLED` in the environment before the VM starts, and
-restart the application to change it.
+Restart the application to change whether the aggregator runs.
 
 ## What is reported
 

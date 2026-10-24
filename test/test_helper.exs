@@ -1,6 +1,11 @@
 # Modules whose behaviour a test may replace. Copying one changes nothing on
 # its own: Mimic only takes over for the tests that set an expectation, and only
 # for the processes those expectations are allowed into.
+# The library is on by default, so the application starts its aggregator at
+# boot. Each test starts the one it needs, under the same registered name, so
+# the application's is stopped here rather than left running for the suite.
+Application.stop(:dd_data_streams)
+
 Mimic.copy(DdDataStreams.Aggregator)
 Mimic.copy(DdDataStreams.Transport.Req)
 
