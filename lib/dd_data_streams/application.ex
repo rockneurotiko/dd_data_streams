@@ -6,15 +6,16 @@ defmodule DdDataStreams.Application do
   an enabled pipeline that only calls `DdDataStreams.attach/0` is therefore
   recorded without the host adding the aggregator to its own supervision tree.
 
-  The transport is read from the application environment when the aggregator is
-  started, so a host can reuse its own HTTP pool instead of the default Req
-  implementation:
+  The transport comes from `config :dd_data_streams, transport:`, so a host can
+  reuse its own HTTP pool instead of the default Req implementation:
 
       config :dd_data_streams, transport: MyApp.AgentTransport
 
-  Without that key the Req implementation is used when Req is available. When
-  neither resolves, the start logs an error naming the key, because every flush
-  would otherwise be dropped in silence.
+  The aggregator reads it on every flush rather than at start, so changing the
+  key while it runs applies to the next payload. Without that key the Req
+  implementation is used when Req is available. When neither resolves, the start
+  logs an error naming the key, because every flush would otherwise be dropped
+  in silence.
 
   Whether it runs at all is decided once, when the application starts, from
   `DdDataStreams.Config.enabled?/0`, which is on unless it is turned off.
@@ -24,9 +25,8 @@ defmodule DdDataStreams.Application do
   requests.
 
   An aggregator that another application or a test suite already supervises
-  under the registered name is left as it is instead of being started twice,
-  which also means it keeps the transport it was started with: the configured
-  transport applies only when this supervisor starts the aggregator.
+  under the registered name is left as it is instead of being started twice; it
+  reads the same configuration, so it posts where this one would have.
   """
 
   use Application
@@ -36,9 +36,6 @@ defmodule DdDataStreams.Application do
   alias DdDataStreams.Aggregator
   alias DdDataStreams.Config
 
-  @transport_key :transport
-  @default_transport DdDataStreams.Transport.Req
-
   @impl true
   def start(_type, _args) do
     Supervisor.start_link(children(), strategy: :one_for_one)
@@ -46,29 +43,20 @@ defmodule DdDataStreams.Application do
 
   defp children do
     if Config.enabled?() and is_nil(Process.whereis(Aggregator)) do
-      [{Aggregator, transport: transport()}]
+      warn_if_no_transport()
+      [{Aggregator, []}]
     else
       []
     end
   end
 
-  defp transport do
-    case Application.get_env(:dd_data_streams, @transport_key) || default_transport() do
-      nil ->
-        Logger.error(
-          "no agent transport is available: set `config :dd_data_streams, " <>
-            "#{@transport_key}: MyApp.Transport` or add the optional :req dependency; " <>
-            "every flush would be dropped"
-        )
-
-        nil
-
-      transport ->
-        transport
+  defp warn_if_no_transport do
+    if is_nil(Config.transport()) do
+      Logger.error(
+        "no agent transport is available: set `config :dd_data_streams, " <>
+          "transport: MyApp.Transport` or add the optional :req dependency; " <>
+          "every flush would be dropped"
+      )
     end
-  end
-
-  defp default_transport do
-    if Code.ensure_loaded?(@default_transport), do: @default_transport
   end
 end

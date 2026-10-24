@@ -80,6 +80,64 @@ defmodule DdDataStreams.TransportTest do
     end
   end
 
+  describe "application configuration" do
+    setup do
+      names = ~w(DD_TRACE_AGENT_URL DD_AGENT_HOST DD_TRACE_AGENT_PORT)
+      previous = Map.new(names, &{&1, System.get_env(&1)})
+      Enum.each(names, &System.delete_env/1)
+
+      on_exit(fn ->
+        for {name, value} <- previous do
+          if value, do: System.put_env(name, value), else: System.delete_env(name)
+        end
+
+        for key <- [:agent_url, :agent_host, :agent_port, :transport] do
+          Application.delete_env(:dd_data_streams, key)
+        end
+      end)
+
+      :ok
+    end
+
+    test "agent_url/0 reads the configured keys, which win over the environment" do
+      System.put_env("DD_AGENT_HOST", "env-host")
+      System.put_env("DD_TRACE_AGENT_PORT", "9999")
+
+      configure(agent_host: "configured", agent_port: 8127)
+      assert Config.agent_url() == "http://configured:8127"
+
+      configure(agent_url: "http://configured:8126/")
+      assert Config.agent_url() == "http://configured:8126"
+    end
+
+    # A URL is a whole setting and beats a host and port, wherever each came from.
+    test "an environment URL still wins over a configured host and port" do
+      System.put_env("DD_TRACE_AGENT_URL", "http://env:8126")
+      configure(agent_host: "configured", agent_port: 8127)
+
+      assert Config.agent_url() == "http://env:8126"
+    end
+
+    test "a blank configured value counts as unset" do
+      System.put_env("DD_AGENT_HOST", "env-host")
+      configure(agent_host: " ")
+
+      assert Config.agent_url() == "http://env-host:8126"
+    end
+
+    test "transport/0 reads the configured module" do
+      configure(transport: Transport)
+
+      assert Config.transport() == Transport
+    end
+  end
+
+  defp configure(settings) do
+    Enum.each(settings, fn {key, value} ->
+      Application.put_env(:dd_data_streams, key, value)
+    end)
+  end
+
   # A one-shot HTTP server: it accepts a single request, reports the request
   # line, the headers and the body to the test process, and answers with the
   # given status.

@@ -63,10 +63,8 @@ defmodule DdDataStreams.ApplicationTest do
 
     supervisor = start_application()
 
-    assert [{Aggregator, aggregator, :worker, [Aggregator]}] =
+    assert [{Aggregator, _aggregator, :worker, [Aggregator]}] =
              Supervisor.which_children(supervisor)
-
-    assert :sys.get_state(aggregator).transport == Transport
 
     # Complete bucket, so the flush has something to post.
     Aggregator.add(%{

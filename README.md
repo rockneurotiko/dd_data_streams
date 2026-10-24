@@ -248,8 +248,11 @@ library is disabled, so these calls need no guard at the call site.
 
 ## Configuration
 
-Everything is read from the process environment when it is needed, except the
-transport and the extractor, which are application configuration.
+Every value is read when it is needed, never at compile time: from the
+application configuration below when that key is set, and from the process
+environment otherwise. Application configuration wins over the environment, and
+an unset, empty or blank value counts as unset, so one setting can be given in
+either place.
 
 ### Environment variables
 
@@ -269,22 +272,34 @@ key is configured here and no authentication header is sent.
 
 ### Application configuration
 
-Three keys are application configuration:
+Each environment variable in the table above has a key of the same meaning
+here, and the key wins when both are set:
 
 ```elixir
 config :dd_data_streams,
   # Defaults to true. A boolean here wins over DD_DATA_STREAMS_ENABLED.
   enabled: true,
+  service: "checkout",
+  env: "prod",
+  version: "1.2.3",
+  primary_tag: "region:eu",
+  # A port is accepted as a string or an integer.
+  agent_url: "http://localhost:8126",
+  agent_host: "localhost",
+  agent_port: 8126,
   # Defaults to [DdDataStreams.Extractor.GooglePubSub].
   extractors: [MyApp.KafkaExtractor, DdDataStreams.Extractor.GooglePubSub],
   # Defaults to DdDataStreams.Transport.Req when Req is available.
   transport: MyApp.AgentTransport
 ```
 
-The extractors are resolved on every attach, publish and consume call, so a
-change applies without a restart. The transport is read when the aggregator
-starts, so a change to it needs an application restart. When the transport key
-is absent, `DdDataStreams.Transport.Req` is used if Req is available.
+The identity (`service`, `env`, `version`, `primary_tag`) is read per
+checkpoint, the agent URL and the transport on every flush, and the extractors
+on every attach, publish and consume call, so changing any of them at runtime
+with `Application.put_env/3` or `System.put_env/2` affects the next use. When
+the transport key is absent, `DdDataStreams.Transport.Req` is used if Req is
+available. The one thing a runtime change cannot do is start or stop the
+aggregator; see below.
 
 ### Turning it off
 

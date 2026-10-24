@@ -263,6 +263,33 @@ defmodule DdDataStreams.PayloadTest do
       assert Config.primary_tag() == "region:eu"
     end
 
+    test "the identity is read from the configured keys, which win over the DD_ variables" do
+      on_exit(fn ->
+        for key <- [:service, :env, :version, :primary_tag] do
+          Application.delete_env(:dd_data_streams, key)
+        end
+      end)
+
+      System.put_env("DD_SERVICE", "from-env")
+      System.put_env("DD_ENV", "from-env")
+      System.put_env("DD_VERSION", "from-env")
+      System.put_env("DD_PRIMARY_TAG", "from-env")
+
+      for {key, value} <- [
+            service: "checkout",
+            env: "prod",
+            version: "1.2.3",
+            primary_tag: "region:eu"
+          ] do
+        Application.put_env(:dd_data_streams, key, value)
+      end
+
+      assert Config.service() == "checkout"
+      assert Config.env() == "prod"
+      assert Config.version() == "1.2.3"
+      assert Config.primary_tag() == "region:eu"
+    end
+
     test "the library is enabled unless DD_DATA_STREAMS_ENABLED turns it off" do
       System.delete_env("DD_DATA_STREAMS_ENABLED")
       assert Config.enabled?()

@@ -20,7 +20,9 @@ defmodule DdDataStreams.Aggregator do
   measurement, and nothing is raised. Stopping the process sends everything,
   including the partial bucket.
 
-  One payload and one request are built per service.
+  One payload and one request are built per service. The transport and the
+  agent URL are read from `DdDataStreams.Config` on every flush, so a change to
+  either applies to the next one.
   """
 
   use GenServer
@@ -57,10 +59,8 @@ defmodule DdDataStreams.Aggregator do
   @doc """
   Starts the aggregator under its registered name.
 
-  Options:
-
-    * `:transport` - the `DdDataStreams.Transport` implementation to post with;
-      defaults to the Req implementation when Req is available
+  The transport is not an option: it is read from `DdDataStreams.Config` on
+  every flush, so it can be changed while the aggregator runs.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -98,9 +98,9 @@ defmodule DdDataStreams.Aggregator do
   end
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     Process.send_after(self(), :flush, @flush_interval_ms)
-    {:ok, %{transport: Keyword.get(opts, :transport, default_transport()), buckets: %{}}}
+    {:ok, %{buckets: %{}}}
   end
 
   @impl true
@@ -208,10 +208,12 @@ defmodule DdDataStreams.Aggregator do
     # would never become due and would be held until the process stops.
     buckets = Map.reject(buckets, fn {{_f, _s, start}, _} -> start > horizon end)
 
+    transport = Config.transport()
+
     due
     |> Enum.group_by(fn {{_family, service, _start}, _points} -> service end)
     |> Enum.each(fn {service, entries} ->
-      post(state.transport, service, build_payload(service, entries))
+      post(transport, service, build_payload(service, entries))
     end)
 
     %{state | buckets: buckets}
@@ -250,9 +252,11 @@ defmodule DdDataStreams.Aggregator do
     end)
   end
 
+  defp post(nil, service, _payload), do: failed(service, :no_transport)
+
   defp post(transport, service, payload) do
     body = Payload.encode(payload) |> IO.iodata_to_binary() |> :zlib.gzip()
-    url = Config.agent_url(System.get_env()) <> "/v0.1/pipeline_stats"
+    url = Config.agent_url() <> "/v0.1/pipeline_stats"
 
     case transport.post(url, @headers, body) do
       {:ok, status} when status < 400 -> :ok
@@ -274,9 +278,5 @@ defmodule DdDataStreams.Aggregator do
     :telemetry.execute(@error_event, %{count: 1}, %{service: service, reason: reason})
 
     :ok
-  end
-
-  defp default_transport do
-    if Code.ensure_loaded?(DdDataStreams.Transport.Req), do: DdDataStreams.Transport.Req
   end
 end

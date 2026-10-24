@@ -284,9 +284,22 @@ defmodule DdDataStreams.AggregatorTest do
 
   if Code.ensure_loaded?(DdDataStreams.Transport.Req) do
     test "the Req implementation is the default transport" do
-      pid = start_supervised!({Aggregator, []})
-
-      assert :sys.get_state(pid).transport == DdDataStreams.Transport.Req
+      assert DdDataStreams.Config.transport() == DdDataStreams.Transport.Req
     end
+  end
+
+  test "the transport is read on every flush, so a runtime change applies" do
+    start_aggregator()
+    Aggregator.add(@checkpoint)
+
+    # The behaviour module has no post/3 of its own, so naming it as the
+    # transport makes the flush fail in a way that says which module was used.
+    Application.put_env(:dd_data_streams, :transport, Transport)
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :transport) end)
+
+    assert :ok = Aggregator.flush()
+
+    assert_receive {:flush_error, _event, %{count: 1},
+                    %{reason: %UndefinedFunctionError{module: Transport}}}
   end
 end
