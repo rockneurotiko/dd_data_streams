@@ -3,7 +3,7 @@ defmodule DdDataStreams.Application do
   Runs the aggregator for the lifetime of the application.
 
   The aggregator is started under a supervisor, so it is restarted if it dies;
-  an enabled pipeline that only calls `DdDataStreams.attach/1` is therefore
+  an enabled pipeline that only calls `DdDataStreams.attach/0` is therefore
   recorded without the host adding the aggregator to its own supervision tree.
 
   The transport is read from the application environment when the aggregator is

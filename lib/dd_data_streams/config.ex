@@ -17,7 +17,7 @@ defmodule DdDataStreams.Config do
   and every flush is dropped.
 
   The enable flag means something different in each place, and the difference
-  matters. `DdDataStreams.attach/1` and `DdDataStreams.publish/3` ask
+  matters. `DdDataStreams.attach/0` and `DdDataStreams.publish/3` ask
   `enabled?/0` on every call, so they follow the flag when it changes at
   runtime, while the aggregator keeps the answer it started with. Turning the
   flag on after boot installs handlers and injects headers with no aggregator to
@@ -27,12 +27,16 @@ defmodule DdDataStreams.Config do
   recording into the aggregator that is still running.
 
   The two values belong in different places. The enable flag is an environment
-  variable - no configuration key reads it - and `attach/1` and `publish/3`
+  variable - no configuration key reads it - and `attach/0` and `publish/3`
   follow it immediately, so changing it at runtime changes injection and handler
   installation, but not the aggregator, which keeps the decision it started with
   and needs an application restart to change. The transport is a configuration
   value, read only when the aggregator starts, so a change to it has no effect
   until the application restarts.
+
+  The extractors are the third decision, and the only one that is not taken
+  once: `DdDataStreams` resolves `config :dd_data_streams, extractors:` on every
+  call, so naming a different list applies without a restart.
 
   `agent_url/1` takes the environment as an argument because it is also asked
   for outside the VM's environment, from tests and from a custom transport.

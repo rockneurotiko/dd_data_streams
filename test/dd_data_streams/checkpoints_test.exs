@@ -1,10 +1,10 @@
-defmodule DdDataStreams.Integrations.GooglePubSubTest do
+defmodule DdDataStreams.CheckpointsTest do
   use ExUnit.Case, async: false
 
-  alias DdDataStreams.Integrations.GooglePubSub
+  alias DdDataStreams.Checkpoints
   alias DdDataStreams.{Pathway, Propagator}
 
-  @headers Path.expand("../../fixtures/propagation/headers.txt", __DIR__)
+  @headers Path.expand("../fixtures/propagation/headers.txt", __DIR__)
            |> File.read!()
            |> Code.eval_string()
            |> elem(0)
@@ -61,7 +61,7 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
     attributes = %{"origin" => "eu", "dd-pathway-ctx-base64" => header.base64}
     message = pubsub_message(attributes)
 
-    {pathway, checkpoint} = GooglePubSub.consume(message, "orders-sub", native(received_ms))
+    {pathway, checkpoint} = Checkpoints.consume(message, @consume_tags, native(received_ms))
 
     assert checkpoint.tags == @consume_tags
     assert checkpoint.parent_hash == header.hash
@@ -93,7 +93,7 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
 
     for attributes <- unusable do
       {pathway, checkpoint} =
-        GooglePubSub.consume(pubsub_message(attributes), "orders-sub", native(received_ms))
+        Checkpoints.consume(pubsub_message(attributes), @consume_tags, native(received_ms))
 
       assert checkpoint.parent_hash == 0
       assert checkpoint.hash == consume_hash(0)
@@ -112,7 +112,7 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
     message = pubsub_message(%{"origin" => "eu"})
 
     {pathway, checkpoint, published} =
-      GooglePubSub.publish("orders", message, consumed, & &1)
+      Checkpoints.publish(@produce_tags, message, consumed, & &1)
 
     assert checkpoint.tags == @produce_tags
     assert checkpoint.parent_hash == consume_checkpoint.hash
@@ -129,7 +129,7 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
     message = pubsub_message(nil)
 
     {pathway, checkpoint, _published} =
-      GooglePubSub.publish("orders", message, Pathway.new(%{}), & &1)
+      Checkpoints.publish(@produce_tags, message, Pathway.new(%{}), & &1)
 
     assert checkpoint.parent_hash == 0
     assert checkpoint.hash == produce_hash(0)
@@ -145,7 +145,7 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
       pubsub_message(%{"origin" => "eu", "dd-pathway-ctx-base64" => "stale"})
 
     {pathway, _checkpoint, published} =
-      GooglePubSub.publish("orders", message, Pathway.new(%{}), & &1)
+      Checkpoints.publish(@produce_tags, message, Pathway.new(%{}), & &1)
 
     assert published.attributes["origin"] == "eu"
     refute published.attributes["dd-pathway-ctx-base64"] == "stale"
@@ -156,7 +156,7 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
     received_ms = 1_780_345_623_738
 
     {consumed, _checkpoint} =
-      GooglePubSub.consume(pubsub_message(nil), "orders-sub", native(received_ms))
+      Checkpoints.consume(pubsub_message(nil), @consume_tags, native(received_ms))
 
     message = pubsub_message(%{"origin" => "eu"}, data: "payload")
     calls = :counters.new(1, [])
@@ -167,7 +167,7 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
     end
 
     {_pathway, checkpoint, published} =
-      GooglePubSub.publish("orders", message, consumed, publish_fun)
+      Checkpoints.publish(@produce_tags, message, consumed, publish_fun)
 
     # data 7 + "origin"/"eu" 8 + ordering key 10; the 21-byte key and 28-byte
     # value this call writes are not counted.
@@ -182,8 +182,8 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
     {consumed, consume_checkpoint} = consume_reference(header)
     message = pubsub_message(nil)
 
-    {_first_pathway, first, _} = GooglePubSub.publish("orders", message, consumed, & &1)
-    {_second_pathway, second, _} = GooglePubSub.publish("orders", message, consumed, & &1)
+    {_first_pathway, first, _} = Checkpoints.publish(@produce_tags, message, consumed, & &1)
+    {_second_pathway, second, _} = Checkpoints.publish(@produce_tags, message, consumed, & &1)
 
     assert first.parent_hash == consume_checkpoint.hash
     assert second.parent_hash == consume_checkpoint.hash
@@ -194,16 +194,45 @@ defmodule DdDataStreams.Integrations.GooglePubSubTest do
     message = %{data: "abc", attributes: nil, ordering_key: nil}
 
     {_pathway, checkpoint, published} =
-      GooglePubSub.publish("orders", message, Pathway.new(%{}), & &1)
+      Checkpoints.publish(@produce_tags, message, Pathway.new(%{}), & &1)
 
     assert checkpoint.payload_size == 3
     assert Map.keys(published.attributes) == ["dd-pathway-ctx-base64"]
   end
 
+  test "a message carried in a header list is consumed and produced in that shape" do
+    header = reference_header()
+    attributes = [{"traceparent", "00-abc"}, {"dd-pathway-ctx-base64", header.base64}]
+
+    {_pathway, checkpoint, published} =
+      Checkpoints.publish(
+        @produce_tags,
+        %{data: "hello", headers: attributes},
+        Pathway.new(%{}),
+        & &1
+      )
+
+    assert checkpoint.payload_size == 5 + byte_size("traceparent") + 6 + 21 + 28
+    assert [{"dd-pathway-ctx-base64", encoded}, {"traceparent", "00-abc"}] = published.headers
+    assert {:ok, produced} = Propagator.decode_str(encoded)
+    assert produced.hash == checkpoint.hash
+
+    # And back in: a header list is a carrier a consume checkpoint reads too.
+    {consumed, inbound} =
+      Checkpoints.consume(
+        %{data: "hello", headers: attributes},
+        @consume_tags,
+        native(header.edge_start + 1)
+      )
+
+    assert inbound.parent_hash == header.hash
+    assert consumed.hash == inbound.hash
+  end
+
   defp consume_reference(header) do
-    GooglePubSub.consume(
+    Checkpoints.consume(
       pubsub_message(%{"dd-pathway-ctx-base64" => header.base64}),
-      "orders-sub",
+      @consume_tags,
       native(header.edge_start + 1)
     )
   end

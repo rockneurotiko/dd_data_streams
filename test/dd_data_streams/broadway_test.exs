@@ -42,6 +42,7 @@ defmodule DdDataStreams.BroadwayTest do
 
     detach_all()
     Context.clear()
+    Application.delete_env(:dd_data_streams, :extractors)
 
     # The handlers run in the process that emits the telemetry event, which is
     # this one, so a private-mode stub records the checkpoints the library hands
@@ -52,6 +53,7 @@ defmodule DdDataStreams.BroadwayTest do
     on_exit(fn ->
       detach_all()
       Context.clear()
+      Application.delete_env(:dd_data_streams, :extractors)
 
       for {name, value} <- previous do
         if value, do: System.put_env(name, value), else: System.delete_env(name)
@@ -67,7 +69,7 @@ defmodule DdDataStreams.BroadwayTest do
     attributes = %{"dd-pathway-ctx-base64" => header.base64}
     message = pubsub_message(attributes, received_at: native(received_ms))
 
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
     consume_event(message)
 
     assert_receive {:checkpoint, checkpoint}
@@ -89,7 +91,7 @@ defmodule DdDataStreams.BroadwayTest do
     received_ms = 1_780_345_623_738
     message = pubsub_message(nil, received_at: native(received_ms))
 
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
     # Broadway's own timestamps are when the processor picked the message up.
     consume_event(message, %{}, %{monotonic_time: -1, system_time: :dispatch_time})
 
@@ -100,7 +102,7 @@ defmodule DdDataStreams.BroadwayTest do
   test "a leaf consumer that produces nothing still records a consume checkpoint" do
     message = pubsub_message(nil)
 
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
     consume_event(message)
 
     assert_receive {:checkpoint, checkpoint}
@@ -117,7 +119,7 @@ defmodule DdDataStreams.BroadwayTest do
     header = reference_header()
     message = pubsub_message(%{"dd-pathway-ctx-base64" => header.base64})
 
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
     consume_event(message)
     assert_receive {:checkpoint, consumed}
 
@@ -145,7 +147,7 @@ defmodule DdDataStreams.BroadwayTest do
     headers = distinct_headers(3)
     messages = batch_messages(headers)
 
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
 
     consumed =
       headers
@@ -176,7 +178,7 @@ defmodule DdDataStreams.BroadwayTest do
     headers = distinct_headers(3)
     messages = batch_messages(headers)
 
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
     Enum.each(messages, &consume_event/1)
     batch_event(messages)
     flushed_consumes()
@@ -211,29 +213,162 @@ defmodule DdDataStreams.BroadwayTest do
     end
   end
 
-  test "a message without a subscription or receive time falls back to the configured values" do
-    assert :ok = DdDataStreams.attach(subscription: "fallback-sub")
+  test "a message without a receive time is stamped when the checkpoint is taken" do
+    assert :ok = DdDataStreams.attach()
 
     before = System.system_time(:millisecond)
-    consume_event(pubsub_message(nil, subscription: @absent, received_at: @absent))
+    consume_event(pubsub_message(nil, received_at: @absent))
     after_emit = System.system_time(:millisecond)
 
     assert_receive {:checkpoint, checkpoint}
 
-    assert checkpoint.tags == [
-             "direction:in",
-             "subscription:fallback-sub",
-             "type:google-pubsub"
-           ]
-
+    assert checkpoint.tags == @consume_tags
     assert checkpoint.timestamp >= before
     assert checkpoint.timestamp <= after_emit
     assert checkpoint.pathway_latency == 0
     assert checkpoint.edge_latency == 0
   end
 
+  test "several extractors name their own broker's edges in one application" do
+    kafka_extractors()
+    assert :ok = DdDataStreams.attach()
+
+    header = reference_header()
+    received_ms = header.edge_start + 7
+
+    # A Kafka message: topic, partition, header list, millisecond timestamp.
+    consume_event(%{
+      data: "hello",
+      metadata: %{
+        topic: "orders",
+        partition: 3,
+        headers: [{"dd-pathway-ctx-base64", header.base64}],
+        ts: received_ms
+      }
+    })
+
+    assert_receive {:checkpoint, consumed}
+    assert consumed.tags == ["direction:in", "topic:orders", "type:kafka", "partition:3"]
+    assert consumed.parent_hash == header.hash
+    assert consumed.timestamp == received_ms
+    assert consumed.edge_latency == 7
+
+    # The stage producing from that message reports its edge with the same
+    # extractor, and writes the header list it was given.
+    published = DdDataStreams.publish("orders-out", %{data: "hello", headers: []}, & &1)
+
+    assert_receive {:checkpoint, produced}
+    assert produced.tags == ["direction:out", "topic:orders-out", "type:kafka"]
+    assert [{"dd-pathway-ctx-base64", _encoded}] = published.headers
+
+    # A Pub/Sub message in the same application is still named by its own
+    # extractor, from its own metadata.
+    consume_event(pubsub_message(%{"dd-pathway-ctx-base64" => header.base64}))
+
+    assert_receive {:checkpoint, pubsub_consumed}
+    assert pubsub_consumed.tags == @consume_tags
+    assert pubsub_consumed.parent_hash == header.hash
+
+    # And a produce after it is a Pub/Sub produce without being told so.
+    _published =
+      DdDataStreams.publish("orders", %{data: "hello", attributes: %{}}, & &1)
+
+    assert_receive {:checkpoint, pubsub_produced}
+    assert pubsub_produced.tags == @produce_tags
+  end
+
+  test "a stage that changes technology names the extractor it produces with" do
+    kafka_extractors()
+    assert :ok = DdDataStreams.attach()
+
+    header = reference_header()
+
+    consume_event(%{
+      data: "hello",
+      metadata: %{topic: "orders", headers: [{"dd-pathway-ctx-base64", header.base64}], ts: 1}
+    })
+
+    assert_receive {:checkpoint, _consumed}
+
+    # Consumed from Kafka, published to Pub/Sub: the topic alone cannot say
+    # which bus it goes to, so the outgoing extractor is named.
+    _published =
+      DdDataStreams.publish("orders", %{data: "hello", attributes: %{}}, & &1,
+        extractor: DdDataStreams.Extractor.GooglePubSub
+      )
+
+    assert_receive {:checkpoint, produced}
+    assert produced.tags == @produce_tags
+  end
+
+  test "a batch produces with the extractor that consumed its messages" do
+    kafka_extractors()
+    assert :ok = DdDataStreams.attach()
+
+    messages =
+      for partition <- 1..2 do
+        %{data: "hello", metadata: %{topic: "orders", headers: [], ts: 1, partition: partition}}
+      end
+
+    Enum.each(messages, &consume_event/1)
+    for _ <- messages, do: assert_receive({:checkpoint, _consume})
+
+    # The batch stage is a different process, so the extractor has to arrive
+    # with the fan-in pathway for its own produce edge to be named.
+    batch_event(messages)
+
+    published = DdDataStreams.publish("orders-out", %{data: "hello", headers: []}, & &1)
+
+    assert_receive {:checkpoint, produced}
+    assert produced.tags == ["direction:out", "topic:orders-out", "type:kafka"]
+    assert [{"dd-pathway-ctx-base64", _encoded}] = published.headers
+
+    # A batch no extractor can name leaves neither a pathway nor an extractor.
+    batch_event([%{data: "hello", metadata: %{}}])
+
+    assert Context.get() == %Pathway{}
+    assert Context.get_extractor() == nil
+  end
+
+  test "a produce with no consuming stage needs one extractor to be configured" do
+    assert :ok = DdDataStreams.attach()
+
+    message = %{data: "hello", attributes: %{}}
+    assert DdDataStreams.publish("orders", message, & &1)
+
+    assert_receive {:checkpoint, produced}
+    assert produced.tags == @produce_tags
+
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.Extractor.GooglePubSub,
+      DdDataStreams.BroadwayTest.KafkaExtractor
+    ])
+
+    assert_raise ArgumentError, ~r/pass `extractor: MyApp.Extractor`/, fn ->
+      DdDataStreams.publish("orders", message, & &1)
+    end
+  end
+
+  test "attaching refuses a module that is not an extractor" do
+    Application.put_env(:dd_data_streams, :extractors, [Enum])
+
+    assert_raise ArgumentError, ~r/is not a list of DdDataStreams.Extractor/, fn ->
+      DdDataStreams.attach()
+    end
+
+    assert :telemetry.list_handlers(@consume_event) == []
+
+    Application.put_env(:dd_data_streams, :extractors, DdDataStreams.Extractor.GooglePubSub)
+
+    assert_raise ArgumentError, ~r/is not a list of DdDataStreams.Extractor/, fn ->
+      DdDataStreams.attach()
+    end
+
+    assert :telemetry.list_handlers(@consume_event) == []
+  end
+
   test "a message without a subscription records nothing" do
-    assert :ok = DdDataStreams.attach([])
+    assert :ok = DdDataStreams.attach()
 
     consume_event(pubsub_message(nil, subscription: @absent))
 
@@ -244,7 +379,7 @@ defmodule DdDataStreams.BroadwayTest do
     header = reference_header()
     message = pubsub_message(%{"dd-pathway-ctx-base64" => header.base64})
 
-    assert :ok = DdDataStreams.attach([])
+    assert :ok = DdDataStreams.attach()
     consume_event(message)
     assert_receive {:checkpoint, _consumed}
     assert Context.get()
@@ -268,8 +403,8 @@ defmodule DdDataStreams.BroadwayTest do
   end
 
   test "attaching twice keeps one handler and one checkpoint per message" do
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
+    assert :ok = DdDataStreams.attach()
 
     assert length(:telemetry.list_handlers(@consume_event)) == 1
 
@@ -282,7 +417,7 @@ defmodule DdDataStreams.BroadwayTest do
   test "nothing is attached or injected while the library is disabled" do
     System.delete_env("DD_DATA_STREAMS_ENABLED")
 
-    assert :ok = DdDataStreams.attach(subscription: @subscription)
+    assert :ok = DdDataStreams.attach()
     assert :telemetry.list_handlers(@consume_event) == []
 
     consume_event(pubsub_message(nil))
@@ -394,6 +529,13 @@ defmodule DdDataStreams.BroadwayTest do
     )
   end
 
+  defp kafka_extractors do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.KafkaExtractor,
+      DdDataStreams.Extractor.GooglePubSub
+    ])
+  end
+
   defp flushed_consumes do
     for _ <- 1..3, do: assert_receive({:checkpoint, _consume})
     :ok
@@ -411,4 +553,34 @@ defmodule DdDataStreams.BroadwayTest do
 
   defp consume_hash(parent), do: Pathway.pathway_hash(node_hash(@consume_tags), parent)
   defp produce_hash(parent), do: Pathway.pathway_hash(node_hash(@produce_tags), parent)
+end
+
+defmodule DdDataStreams.BroadwayTest.KafkaExtractor do
+  # The shape BroadwayKafka stamps: the topic, the partition, the header list and
+  # a millisecond timestamp. It exists to prove the library is not tied to one
+  # broker, so it stays with the tests rather than in the library.
+  @behaviour DdDataStreams.Extractor
+
+  @impl true
+  def consume(%{topic: topic} = metadata) when is_binary(topic) do
+    tags = ["direction:in", "topic:" <> topic, "type:kafka"]
+
+    tags =
+      case Map.get(metadata, :partition) do
+        partition when is_integer(partition) -> tags ++ ["partition:#{partition}"]
+        _ -> tags
+      end
+
+    {:ok, tags, %{attributes: Map.get(metadata, :headers), received_at: received_at(metadata)}}
+  end
+
+  def consume(_metadata), do: :error
+
+  @impl true
+  def produce(topic), do: ["direction:out", "topic:" <> topic, "type:kafka"]
+
+  defp received_at(%{ts: milliseconds}) when is_integer(milliseconds),
+    do: System.convert_time_unit(milliseconds, :millisecond, :native)
+
+  defp received_at(_metadata), do: nil
 end

@@ -24,36 +24,60 @@ defmodule DdDataStreams.Propagator do
   @max_varint_bytes 8
 
   @doc """
-  Puts the pathway into a message's attributes under `#{@header}`.
+  Puts the pathway into a message's headers under `#{@header}`.
 
-  A pathway that has not been checkpointed (hash zero) carries no information
-  and is not written. The attributes are returned unchanged so a produce path
-  can call this unconditionally.
+  The headers are either an attribute map or a list of `{key, value}` pairs, as
+  `BroadwayKafka` exposes them; an existing entry under the same key is
+  replaced in both. A pathway that has not been checkpointed (hash zero) carries
+  no information and is not written. The headers are returned unchanged so a
+  produce path can call this unconditionally.
   """
-  @spec put(map(), Pathway.t()) :: map()
+  @spec put(map() | [{binary(), binary()}], Pathway.t()) :: map() | [{binary(), binary()}]
   def put(attributes, %Pathway{hash: 0}), do: attributes
+
+  def put(attributes, %Pathway{} = pathway) when is_list(attributes) do
+    [
+      {@header, encode_str(pathway)}
+      | Enum.reject(attributes, fn
+          {key, _value} -> key == @header
+          _other -> false
+        end)
+    ]
+  end
 
   def put(attributes, %Pathway{} = pathway) do
     Map.put(attributes, @header, encode_str(pathway))
   end
 
   @doc """
-  Reads the pathway out of a message's attributes.
+  Reads the pathway out of a message's headers, as an attribute map or a list
+  of `{key, value}` pairs.
 
-  Returns `nil` when the attribute is absent, is not a valid base64 header, or
+  Returns `nil` when the header is absent, is not a valid base64 header, or
   does not contain a hash and two timestamps.
   """
-  @spec get(map()) :: Pathway.t() | nil
+  @spec get(map() | [{binary(), binary()}] | nil) :: Pathway.t() | nil
   def get(attributes) when is_map(attributes) do
-    with value when is_binary(value) <- Map.get(attributes, @header),
-         {:ok, pathway} <- decode_str(value) do
-      pathway
-    else
-      _ -> nil
+    attributes |> Map.get(@header) |> decode_value()
+  end
+
+  def get(attributes) when is_list(attributes) do
+    case List.keyfind(attributes, @header, 0) do
+      {@header, value} -> decode_value(value)
+      nil -> nil
     end
   end
 
   def get(_attributes), do: nil
+
+  defp decode_value(value) when is_binary(value) do
+    case decode_str(value) do
+      {:ok, pathway} -> pathway
+      :error -> nil
+    end
+  end
+
+  defp decode_value(_value), do: nil
 
   @doc """
   Encodes a pathway as the raw header bytes.

@@ -9,7 +9,7 @@ defmodule DdDataStreams.MixProject do
       name: "DD Data Streams",
       version: "0.1.0",
       elixir: "~> 1.17",
-      description: "Datadog Data Streams Monitoring for Google Pub/Sub pipelines",
+      description: "Datadog Data Streams Monitoring for Broadway pipelines",
       source_url: @source_url,
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -35,7 +35,7 @@ defmodule DdDataStreams.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      # Every checkpoint is a telemetry event, and attach/1 installs the
+      # Every checkpoint is a telemetry event, and attach/0 installs the
       # Broadway handlers on them, so telemetry is always needed.
       {:telemetry, "~> 1.0"},
       # The default agent transport talks HTTP through Req. It is optional so an

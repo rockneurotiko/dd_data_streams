@@ -165,16 +165,7 @@ defmodule DdDataStreams.PubSubEmulatorTest do
 
     data = Base.decode64!(message["data"])
 
-    {pathway, checkpoint} =
-      DdDataStreams.consume(
-        %{
-          data: data,
-          attributes: metadata.attributes,
-          ordering_key: metadata.orderingKey,
-          received_at: metadata.received_at
-        },
-        metadata.subscription
-      )
+    {pathway, checkpoint} = DdDataStreams.consume(%{data: data, metadata: metadata})
 
     assert checkpoint.tags == [
              "direction:in",

@@ -85,10 +85,10 @@ defmodule E2e.Pipeline do
     inbound = DdDataStreams.Propagator.get(attributes)
     IO.puts("decoded inbound pathway: #{inspect(inbound)}")
 
-    # attach/1 recorded the consume checkpoint for this message before Broadway
+    # attach/0 recorded the consume checkpoint for this message before Broadway
     # called this function, and left the checkpointed pathway in the context.
     consume = DdDataStreams.Context.get()
-    IO.puts("consume pathway from attach/1: #{inspect(consume)}")
+    IO.puts("consume pathway from attach: #{inspect(consume)}")
 
     DdDataStreams.publish(
       E2e.Resources.out_topic(),
@@ -148,7 +148,7 @@ defmodule E2e.Verify do
 
     checked =
       for {_data, entry} <- entries do
-        check!(entry.consume != nil, "attach/1 recorded no consume checkpoint")
+        check!(entry.consume != nil, "attach/0 recorded no consume checkpoint")
         check!(is_binary(entry.subscription), "the message metadata carries no subscription")
         check!(is_integer(entry.received_at), "the message metadata carries no receive time")
 
@@ -284,7 +284,7 @@ E2e.PubSub.create_topic(E2e.Resources.out_topic())
 E2e.PubSub.create_subscription(E2e.Resources.sub(), E2e.Resources.in_topic())
 E2e.PubSub.create_subscription(E2e.Resources.out_sub(), E2e.Resources.out_topic())
 
-DdDataStreams.attach([])
+DdDataStreams.attach()
 
 {:ok, _pid} =
   Broadway.start_link(E2e.Pipeline,

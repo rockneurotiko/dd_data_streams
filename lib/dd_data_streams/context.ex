@@ -9,7 +9,7 @@ defmodule DdDataStreams.Context do
   process dictionary, so it belongs to one process: a processor stage, a batch
   processor and a task spawned from either do not see each other's pathway.
 
-  `DdDataStreams.attach/1` writes this context for both kinds of Broadway
+  `DdDataStreams.attach/0` writes this context for both kinds of Broadway
   stage - the pathway of the message a `handle_message/3` call is about to
   receive, and the fan-in pathway of a `handle_batch/4` call - so an application
   that only publishes from those callbacks never touches this module. Set it
@@ -27,18 +27,25 @@ defmodule DdDataStreams.Context do
 
   alias DdDataStreams.Pathway
 
-  @key :dd_data_streams_pathway
+  @pathway_key :dd_data_streams_pathway
+  @extractor_key :dd_data_streams_extractor
 
   @doc """
-  Stores `pathway` as the process's current pathway.
+  Stores `pathway` as the process's current pathway, with the extractor that
+  named its consume edge.
 
       iex> DdDataStreams.Context.put(%DdDataStreams.Pathway{hash: 7})
       :ok
 
+  The extractor is what a produce in this process reports the outgoing edge as,
+  so it follows the pathway: a pipeline that consumes from one technology and
+  publishes to another passes its own extractor to `DdDataStreams.publish/3`
+  instead. `nil` leaves no extractor behind.
   """
-  @spec put(Pathway.t()) :: :ok
-  def put(%Pathway{} = pathway) do
-    Process.put(@key, pathway)
+  @spec put(Pathway.t(), module() | nil) :: :ok
+  def put(%Pathway{} = pathway, extractor \\ nil) do
+    Process.put(@pathway_key, pathway)
+    Process.put(@extractor_key, extractor)
     :ok
   end
 
@@ -51,7 +58,19 @@ defmodule DdDataStreams.Context do
 
   """
   @spec get() :: Pathway.t() | nil
-  def get, do: Process.get(@key)
+  def get, do: Process.get(@pathway_key)
+
+  @doc """
+  Returns the extractor that named the current pathway's consume edge, or `nil`
+  when this process has not consumed a message.
+
+      iex> DdDataStreams.Context.put(%DdDataStreams.Pathway{hash: 7}, Enum)
+      iex> DdDataStreams.Context.get_extractor()
+      Enum
+
+  """
+  @spec get_extractor() :: module() | nil
+  def get_extractor, do: Process.get(@extractor_key)
 
   @doc """
   Removes the process's current pathway.
@@ -65,7 +84,8 @@ defmodule DdDataStreams.Context do
   """
   @spec clear() :: :ok
   def clear do
-    Process.delete(@key)
+    Process.delete(@pathway_key)
+    Process.delete(@extractor_key)
     :ok
   end
 end

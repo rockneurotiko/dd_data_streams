@@ -11,7 +11,7 @@ Pub/Sub or network dependency, and `mix compile`, `mix test`, `mix format` and
 ## What each piece proves
 
 - `run.exs` — a real Broadway pipeline on the client's pull producer:
-  `DdDataStreams.attach([])` installs the consumption handlers, which record one
+  `DdDataStreams.attach()` installs the consumption handlers, which record one
   checkpoint per message with the broker's receive time and leave the
   checkpointed pathway in the process context, and `publish/3` records the
   produce checkpoint on that pathway and injects `dd-pathway-ctx-base64` into a
@@ -93,7 +93,7 @@ metadata: %{
   ...
 }
 decoded inbound pathway: %DdDataStreams.Pathway{hash: 234, pathway_start: 1700000000000, edge_start: 1700003600000}
-consume pathway from attach/1: %DdDataStreams.Pathway{hash: 2940366034965408889, pathway_start: 1700000000000, edge_start: 1792699014982}
+consume pathway from attach: %DdDataStreams.Pathway{hash: 2940366034965408889, pathway_start: 1700000000000, edge_start: 1792699014982}
 produce attributes: %{"dd-pathway-ctx-base64" => "iEc/sgQzhYOAoKv++WKs/YDTrGg="}
 
 == PUBLISHED MESSAGES READ BACK FROM THE BROKER ==

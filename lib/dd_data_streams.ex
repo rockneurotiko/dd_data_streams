@@ -1,14 +1,26 @@
 defmodule DdDataStreams do
   @moduledoc """
-  Data Streams Monitoring for Google Pub/Sub pipelines.
+  Data Streams Monitoring for Broadway pipelines.
 
   Datadog's Data Streams Monitoring follows a payload from the service that
   produced it to the service that consumed it, so it can report how long the
   payload waited in the queue between them and how the services are connected.
   Doing that needs a checkpoint on each side of every edge and a pathway carried
-  on the message itself. This module supplies the Pub/Sub side of that and the
-  Broadway glue that decides where a checkpoint belongs; the pathway hashing,
-  propagation, aggregation and transport live in the modules it calls.
+  on the message itself. This module supplies the Broadway glue that decides
+  where a checkpoint belongs; the pathway hashing, propagation, aggregation and
+  transport live in the modules it calls.
+
+  Nothing here is specific to one broker, or to one broker per application. The
+  library hangs itself on the telemetry events Broadway already emits, so it
+  works with any producer, and the parts that are broker-specific - what a
+  message's metadata says about the edge it arrived on, and which technology to
+  report - are modules behind `DdDataStreams.Extractor`:
+
+      config :dd_data_streams, extractors: [MyApp.KafkaExtractor, DdDataStreams.Extractor.GooglePubSub]
+
+  A message is named by the first configured extractor that recognises its
+  metadata, so an application can run a Kafka pipeline and a Pub/Sub pipeline
+  side by side.
 
   ## Using it in a Broadway pipeline
 
@@ -16,7 +28,7 @@ defmodule DdDataStreams do
   through telemetry instead of through a dependency:
 
       # DD_DATA_STREAMS_ENABLED=true in the environment, then at start up:
-      DdDataStreams.attach(subscription: "orders-sub")
+      DdDataStreams.attach()
 
       # in handle_message/3 or handle_batch/4:
       def handle_message(_processor, message, _context) do
@@ -24,7 +36,7 @@ defmodule DdDataStreams do
         message
       end
 
-  `attach/1` installs two telemetry handlers:
+  `attach/0` installs two telemetry handlers:
 
     * `[:broadway, :processor, :message, :start]`, which Broadway emits once for
       each message it is about to hand to `handle_message/3`. The handler
@@ -45,51 +57,46 @@ defmodule DdDataStreams do
 
   ## Pathways that are not a Broadway stage
 
-  `consume/2` and `publish/3` are the same two checkpoints as functions, for a
+  `consume/1` and `publish/3` are the same two checkpoints as functions, for a
   pipeline that drives the library itself, and `checkpoint/2` records one for a
-  stage that is neither a Pub/Sub consume nor a Pub/Sub produce.
+  stage that is neither a consume nor a produce.
 
   Checkpoints are handed to `DdDataStreams.Aggregator.add/1`, which does nothing
   when the aggregator is not running, so none of these needs to be guarded at
   the call site while the library is disabled.
-
-  ## Latency
-
-  A consume checkpoint is stamped with the time BroadwayCloudPubSub recorded for
-  the message's arrival (`message.metadata.received_at`), not the time the
-  processor picked it up, so the consume edge reports the time the message spent
-  in the subscription rather than Broadway's own backlog.
   """
 
-  alias DdDataStreams.{Aggregator, Config, Context, Pathway}
-  alias DdDataStreams.Integrations.GooglePubSub
+  alias DdDataStreams.{Aggregator, Checkpoints, Config, Context, Pathway}
 
   @handler_id :dd_data_streams
   @consume_event [:broadway, :processor, :message, :start]
   @fan_in_event [:broadway, :batch_processor, :start]
   @events [@consume_event, @fan_in_event]
 
+  @default_extractors [DdDataStreams.Extractor.GooglePubSub]
+  @extractors_key :extractors
+
   @doc """
   Installs the Broadway telemetry handlers that record consume checkpoints and
   fan-in pathways.
 
-  Options:
+  Call it once, when the application starts, before Broadway starts. It does
+  nothing when the library is disabled, and calling it again is harmless:
+  telemetry keeps one handler per id and the second call returns `:ok` instead
+  of failing, so a hot code upgrade does not double the checkpoints.
 
-    * `:subscription` - the subscription to attribute a message to when its
-      metadata carries none, for a producer that predates
-      BroadwayCloudPubSub v2. Without it such a message records no checkpoint.
-
-  Call it once, when the application starts. It does nothing when the library is
-  disabled, and calling it again is harmless: telemetry keeps one handler per id
-  and the second call returns `:ok` instead of failing, so a hot code upgrade
-  does not double the checkpoints.
+  Which broker a message comes from, and which edge tags it is reported under,
+  is the configured `DdDataStreams.Extractor`'s business. Attaching fails with an
+  `ArgumentError` when `config :dd_data_streams, extractors:` is not a non-empty
+  list of extractors, rather than leaving a handler attached that cannot name an
+  edge.
   """
-  @spec attach(keyword()) :: :ok
-  def attach(opts) do
+  @spec attach() :: :ok
+  def attach do
     if Config.enabled?() do
-      case :telemetry.attach_many(@handler_id, @events, &__MODULE__.handle_event/4, %{
-             subscription: Keyword.get(opts, :subscription)
-           }) do
+      ensure_extractors!(extractors())
+
+      case :telemetry.attach_many(@handler_id, @events, &__MODULE__.handle_event/4, %{}) do
         :ok -> :ok
         {:error, :already_exists} -> :ok
       end
@@ -99,42 +106,42 @@ defmodule DdDataStreams do
   end
 
   @doc """
-  Records the consume checkpoint of a message received from `subscription`, and
-  leaves the checkpointed pathway in `DdDataStreams.Context`.
+  Records the consume checkpoint of a message, and leaves the checkpointed
+  pathway in `DdDataStreams.Context`.
 
-  `message` is a map with the parts of the message the checkpoint needs:
+  `message` is a Broadway message, or a map shaped like one: the body in
+  `:data` and the producer's own metadata map in `:metadata`. The configured
+  extractor names the edge from that metadata and hands back the parts a
+  checkpoint measures, so a pipeline that drives the library itself only has to
+  build the metadata the producer would have built.
 
-    * `:data` - the message body
-    * `:attributes` - the message attributes carrying `dd-pathway-ctx-base64`,
-      or `nil`; a missing or unusable header starts a new pathway
-    * `:ordering_key` - the ordering key, or `nil`
-    * `:received_at` - when the message reached the pipeline, in native time
-      units, as BroadwayCloudPubSub v2 stamps it; defaults to now, which reports
-      no consume latency
-
-  `subscription` is used verbatim in the `subscription:` tag, so a short name
-  and a `projects/<project>/subscriptions/<id>` resource name stay
-  distinguishable.
-
-  Returns the pathway the checkpoint reached and the checkpoint itself, with
-  its payload size, for an application that wants to record or forward them
-  itself. The checkpoint has already been given to the aggregator, so adding it
-  again counts the message twice.
+  Returns `nil` when the extractor finds no edge in the metadata - a message
+  with no subscription, no topic, nothing to report it under - and records
+  nothing in that case. Otherwise returns the pathway the checkpoint reached and
+  the checkpoint itself, with its payload size, for an application that wants to
+  record or forward them itself. The checkpoint has already been given to the
+  aggregator, so adding it again counts the message twice.
   """
-  @spec consume(map(), String.t()) :: {Pathway.t(), Pathway.checkpoint()}
-  def consume(%{data: _} = message, subscription) when is_binary(subscription) do
-    {pathway, checkpoint} = GooglePubSub.consume(message, subscription, received_at(message))
+  @spec consume(map()) :: {Pathway.t(), Pathway.checkpoint()} | nil
+  def consume(%{data: _, metadata: _} = message) do
+    case checkpointed(message) do
+      nil ->
+        nil
 
-    Aggregator.add(checkpoint)
-    Context.put(pathway)
+      {extractor, {pathway, checkpoint}} ->
+        Aggregator.add(checkpoint)
+        Context.put(pathway, extractor)
 
-    {pathway, checkpoint}
+        {pathway, checkpoint}
+    end
   end
+
+  def consume(_message), do: nil
 
   @doc """
   Records the produce checkpoint of a message published to `topic`, injects the
-  resulting pathway into the message's attributes, and calls `publish_fun` with
-  that message.
+  resulting pathway into the message's attributes or headers, and calls
+  `publish_fun` with that message.
 
   The pathway continued is the one in `DdDataStreams.Context`, so this is meant
   to be called from the stage that consumed the message being answered: inside
@@ -142,21 +149,36 @@ defmodule DdDataStreams do
   checkpoint, inside `handle_batch/4` onto the batch's fan-in pathway. With no
   context the produce starts a new pathway.
 
-  `message` is a map with `:data`, `:attributes` and `:ordering_key`, as
-  `consume/2` documents. `publish_fun` receives that map with
+  `message` is a map with `:data` and the attributes the producer takes, either
+  a `:attributes` map or a list of `{key, value}` `:headers`; the pathway is
+  written back into the same carrier. `publish_fun` receives that map with
   `dd-pathway-ctx-base64` set and publishes it; its return value is returned
   here. Publishing several messages that answer one consumed message means
   calling this once per message, not chaining one call's result into the next,
   so all of them share one produce node.
 
+  The edge tags come from the extractor that named the consume edge of the
+  message being answered, which is the one `attach/0` left in the context, so a
+  pipeline that consumes and produces on the same technology needs nothing more.
+  A pipeline that changes technology - consuming from Kafka and publishing to
+  Pub/Sub - names the outgoing one, because the topic alone does not say which
+  bus it goes to:
+
+      DdDataStreams.publish("orders-out", message, &publish/1, extractor: MyApp.PubSubExtractor)
+
   When the library is disabled nothing is recorded and nothing is injected:
   `publish_fun` is called with `message` as it is.
   """
-  @spec publish(String.t(), map(), (map() -> result)) :: result when result: var
-  def publish(topic, message, publish_fun) when is_function(publish_fun, 1) do
+  @spec publish(String.t(), map(), (map() -> result), keyword()) :: result when result: var
+  def publish(topic, message, publish_fun, opts \\ []) when is_function(publish_fun, 1) do
     if Config.enabled?() do
       {_pathway, checkpoint, result} =
-        GooglePubSub.publish(topic, message, Context.get() || Pathway.new(%{}), publish_fun)
+        Checkpoints.publish(
+          produce_tags(topic, opts),
+          message,
+          Context.get() || Pathway.new(%{}),
+          publish_fun
+        )
 
       Aggregator.add(checkpoint)
       result
@@ -198,70 +220,113 @@ defmodule DdDataStreams do
   # Telemetry wants arity four and a remote capture, and its handler ids are
   # global to the VM, so an attached handler is reachable before an application
   # starts and must not be able to raise: telemetry detaches a handler that
-  # does, for every pipeline in the VM, and never reattaches it.
+  # does, for every pipeline in the VM, and never reattaches it. A message the
+  # extractor cannot name records nothing instead of failing.
   @spec handle_event([atom()], map(), map(), map()) :: :ok
-  def handle_event(@consume_event, _measurements, metadata, config) do
-    with %{} = message <- received(Map.get(metadata, :message)),
-         subscription when is_binary(subscription) <- subscription(message, config) do
-      consume(message, subscription)
-    else
+  def handle_event(@consume_event, _measurements, metadata, _config) do
+    case consume(Map.get(metadata, :message)) do
       # A message that records no checkpoint must not leave the pathway of the
       # previous message behind for a later produce in this stage to continue.
-      _ -> Context.clear()
+      nil -> Context.clear()
+      _recorded -> :ok
     end
 
     :ok
   end
 
-  def handle_event(@fan_in_event, _measurements, metadata, config) do
-    pathways =
-      for message <- List.wrap(Map.get(metadata, :messages)),
-          pathway when not is_nil(pathway) <- [consumed(message, config)],
-          do: pathway
+  def handle_event(@fan_in_event, _measurements, metadata, _config) do
+    resolved =
+      metadata
+      |> Map.get(:messages)
+      |> List.wrap()
+      |> Enum.map(&checkpointed/1)
+      |> Enum.reject(&is_nil/1)
 
-    Context.put(Pathway.merge(pathways))
+    pathways = for {_extractor, {pathway, _checkpoint}} <- resolved, do: pathway
+
+    # The batch stage is another process, so it needs the extractor the messages
+    # were consumed with for its own produce edges.
+    extractor =
+      case resolved do
+        [{extractor, _checkpointed} | _] -> extractor
+        [] -> nil
+      end
+
+    Context.put(Pathway.merge(pathways), extractor)
   end
 
   def handle_event(_event, _measurements, _metadata, _config), do: :ok
 
-  # The pathway a batch message was consumed on, without recording it again: the
-  # batch's produce edges continue the consume node of a message that already
-  # has its checkpoint from the message event.
-  defp consumed(message, config) do
-    with %{} = message <- received(message),
-         subscription when is_binary(subscription) <- subscription(message, config) do
-      {pathway, _checkpoint} = GooglePubSub.consume(message, subscription, received_at(message))
-      pathway
-    end
+  # The consume checkpoint of a message together with the extractor that named it.
+  # Every configured extractor is asked in order, and the first one that
+  # recognises the metadata wins; recording is the caller's business, so the
+  # batch handler can reuse this without counting a message twice.
+  defp checkpointed(%{data: data, metadata: metadata}) when is_map(metadata) do
+    Enum.find_value(extractors(), fn extractor ->
+      case extractor.consume(metadata) do
+        {:ok, tags, parts} ->
+          checkpoint = Checkpoints.consume(Map.put(parts, :data, data), tags, received_at(parts))
+          {extractor, checkpoint}
+
+        :error ->
+          nil
+      end
+    end)
   end
 
-  # A telemetry metadata map holds one Broadway message, whose own metadata holds
-  # the fields this library needs. Every field is read with a default because the
-  # event carries whatever the emitter put there, and `nil` values are expected:
-  # BroadwayCloudPubSub v1 sets none of them.
-  defp received(%{metadata: metadata} = message) when is_map(metadata) do
-    %{
-      data: Map.get(message, :data),
-      attributes: Map.get(metadata, :attributes),
-      ordering_key: Map.get(metadata, :orderingKey),
-      subscription: Map.get(metadata, :subscription),
-      received_at: Map.get(metadata, :received_at)
-    }
-  end
+  defp checkpointed(_message), do: nil
 
-  defp received(_message), do: nil
-
-  defp subscription(message, config) do
-    case Map.get(message, :subscription) do
-      value when is_binary(value) and value != "" -> value
-      _ -> Map.get(config, :subscription)
-    end
-  end
-
-  defp received_at(message) do
-    case Map.get(message, :received_at) do
+  defp received_at(parts) do
+    case Map.get(parts, :received_at) do
       received_at when is_integer(received_at) -> received_at
       _ -> System.system_time()
+    end
+  end
+
+  defp extractors do
+    Application.get_env(:dd_data_streams, @extractors_key, @default_extractors)
+  end
+
+  # The extractor named on the call, then the one the stage consumed with, then
+  # the only configured one: a topic name alone does not say which bus it goes
+  # to, so an application with several extractors has to say so once the stage
+  # that is producing did not consume the message itself.
+  defp produce_tags(topic, opts) do
+    (Keyword.get(opts, :extractor) || Context.get_extractor() || only_extractor!()).produce(topic)
+  end
+
+  defp only_extractor! do
+    case extractors() do
+      [extractor] ->
+        extractor
+
+      configured ->
+        raise ArgumentError,
+              "several extractors are configured (#{inspect(configured)}): pass " <>
+                "`extractor: MyApp.Extractor` to DdDataStreams.publish/4"
+    end
+  end
+
+  defp ensure_extractors!(configured) do
+    valid? = fn module ->
+      Code.ensure_loaded?(module) and function_exported?(module, :consume, 1) and
+        function_exported?(module, :produce, 1)
+    end
+
+    case configured do
+      [_ | _] = extractors ->
+        unless Enum.all?(extractors, valid?) do
+          raise ArgumentError,
+                "#{inspect(extractors)} is not a list of DdDataStreams.Extractor modules: " <>
+                  "set `config :dd_data_streams, extractors: [MyApp.Extractor]`"
+        end
+
+        :ok
+
+      other ->
+        raise ArgumentError,
+              "#{inspect(other)} is not a list of DdDataStreams.Extractor modules: " <>
+                "set `config :dd_data_streams, extractors: [MyApp.Extractor]`"
     end
   end
 end
