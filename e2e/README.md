@@ -11,17 +11,18 @@ Pub/Sub or network dependency, and `mix compile`, `mix test`, `mix format` and
 ## What each piece proves
 
 - `run.exs` — a real Broadway pipeline on the client's pull producer:
-  `DdDataStreams.attach([])` installs the consumption handlers, `consume/2`
-  records one checkpoint per message with the broker's receive time, and
-  `publish/3` records the produce checkpoint and injects
-  `dd-pathway-ctx-base64` into a message published to a second topic. The
-  capture transport writes the flushed body to disk instead of posting it, so
-  the run is observable without an agent. At the end it *checks* what happened —
-  the consume checkpoint chains onto the inbound hash, the produce header chains
-  onto the consume checkpoint, both replies reach the broker with the attribute,
-  nothing failed to flush, and the decoded payload carries both hashes — and
-  exits non-zero when any of that is missing. Printing is for the reader; the
-  exit status is what CI uses.
+  `DdDataStreams.attach([])` installs the consumption handlers, which record one
+  checkpoint per message with the broker's receive time and leave the
+  checkpointed pathway in the process context, and `publish/3` records the
+  produce checkpoint on that pathway and injects `dd-pathway-ctx-base64` into a
+  message published to a second topic. The capture transport writes the flushed
+  body to disk instead of posting it, so the run is observable without an agent.
+  At the end it *checks* what happened — the context pathway is the consume
+  checkpoint chained onto the inbound hash, the produce header chains onto that
+  consume checkpoint, both replies reach the broker with the attribute, nothing
+  failed to flush, and the decoded payload carries both hashes — and exits
+  non-zero when any of that is missing. Printing is for the reader; the exit
+  status is what CI uses.
 - `lib/e2e/capture.ex` — the transport the script installs before the
   application starts. It saves the exact bytes and headers the agent would have
   received.
@@ -92,14 +93,7 @@ metadata: %{
   ...
 }
 decoded inbound pathway: %DdDataStreams.Pathway{hash: 234, pathway_start: 1700000000000, edge_start: 1700003600000}
-consume checkpoint: %{
-  hash: 2940366034965408889,
-  parent_hash: 234,
-  tags: ["direction:in",
-   "subscription:projects/dsm-test/subscriptions/e2e-sub-1792699014834",
-   "type:google-pubsub"],
-  ...
-}
+consume pathway from attach/1: %DdDataStreams.Pathway{hash: 2940366034965408889, pathway_start: 1700000000000, edge_start: 1792699014982}
 produce attributes: %{"dd-pathway-ctx-base64" => "iEc/sgQzhYOAoKv++WKs/YDTrGg="}
 
 == PUBLISHED MESSAGES READ BACK FROM THE BROKER ==
@@ -112,8 +106,8 @@ captured payloads: [".../e2e/capture-1792699014834/1792699018008378.bin"]
 == VERIFIED ==
 ```
 
-The second message has no inbound header, so its consume checkpoint has
-`parent_hash: 0` and starts a new pathway.
+The second message has no inbound header, so its consume pathway starts at the
+receive time and its parent hash is zero.
 
 ## Decode the captured body
 

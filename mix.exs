@@ -1,13 +1,24 @@
 defmodule DdDataStreams.MixProject do
   use Mix.Project
 
+  @source_url "https://github.com/rockneurotiko/dd_data_streams"
+
   def project do
     [
       app: :dd_data_streams,
+      name: "DD Data Streams",
       version: "0.1.0",
       elixir: "~> 1.17",
+      description: "Datadog Data Streams Monitoring for Google Pub/Sub pipelines",
+      source_url: @source_url,
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      docs: [main: "readme", extras: ["README.md"]],
+      package: [
+        licenses: ["Beerware"],
+        links: %{"GitHub" => @source_url},
+        files: ~w(lib mix.exs .formatter.exs README.md LICENSE)
+      ],
       aliases: aliases(),
       test_coverage: [summary: [threshold: 90]]
     ]
@@ -31,6 +42,7 @@ defmodule DdDataStreams.MixProject do
       # application that passes its own transport does not pull in an HTTP client.
       {:req, "~> 0.5", optional: true},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:mimic, "~> 1.7", only: :test}
     ]
   end

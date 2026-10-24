@@ -80,23 +80,15 @@ defmodule E2e.Pipeline do
     IO.puts("data: #{inspect(message.data)}")
     IO.puts("metadata: #{inspect(message.metadata, pretty: true, limit: :infinity)}")
 
-    attributes = message.metadata.attributes || %{}
+    metadata = message.metadata
+    attributes = metadata.attributes || %{}
     inbound = DdDataStreams.Propagator.get(attributes)
     IO.puts("decoded inbound pathway: #{inspect(inbound)}")
 
-    {_pathway, checkpoint} =
-      DdDataStreams.consume(
-        %{
-          data: message.data,
-          attributes: attributes,
-          ordering_key: message.metadata.orderingKey,
-          received_at: message.metadata.received_at
-        },
-        message.metadata.subscription
-      )
-
-    IO.puts("consume checkpoint: #{inspect(checkpoint, pretty: true, limit: :infinity)}")
-    IO.puts("context pathway: #{inspect(DdDataStreams.Context.get())}")
+    # attach/1 recorded the consume checkpoint for this message before Broadway
+    # called this function, and left the checkpointed pathway in the context.
+    consume = DdDataStreams.Context.get()
+    IO.puts("consume pathway from attach/1: #{inspect(consume)}")
 
     DdDataStreams.publish(
       E2e.Resources.out_topic(),
@@ -107,7 +99,9 @@ defmodule E2e.Pipeline do
         E2e.Observed.put(%{
           data: message.data,
           inbound: inbound,
-          checkpoint: checkpoint,
+          subscription: metadata.subscription,
+          received_at: metadata.received_at,
+          consume: consume,
           produce: outgoing.attributes
         })
 
@@ -133,11 +127,17 @@ end
 defmodule E2e.Verify do
   # What the run has to be able to state, rather than what it prints. A failure
   # here is a broken pipeline, so the script exits non-zero.
+
+  alias DdDataStreams.{Config, Pathway, Propagator}
+
   def run!(out_messages, captured, decoder_output) do
     observed = E2e.Observed.entries()
     entries = Map.new(observed, &{&1.data, &1})
 
-    check!(map_size(entries) == 2, "expected two consumed messages, saw #{inspect(map_size(entries))}")
+    check!(
+      map_size(entries) == 2,
+      "expected two consumed messages, saw #{inspect(map_size(entries))}"
+    )
 
     with_header = entries["hello-with-header"]
     without_header = entries["hello-no-header"]
@@ -145,60 +145,107 @@ defmodule E2e.Verify do
 
     inbound = with_header.inbound
     check!(inbound != nil, "the dd-trace-go header did not decode")
-    check!(with_header.checkpoint.parent_hash == inbound.hash, "the consume checkpoint does not chain onto the inbound pathway")
-    check!(without_header.checkpoint.parent_hash == 0, "a message without a header did not start a new pathway")
 
-    for {_data, entry} <- entries do
-      tags = entry.checkpoint.tags
-      check!("direction:in" in tags, "a consume checkpoint is missing direction:in")
-      check!("type:google-pubsub" in tags, "a consume checkpoint is missing type:google-pubsub")
+    checked =
+      for {_data, entry} <- entries do
+        check!(entry.consume != nil, "attach/1 recorded no consume checkpoint")
+        check!(is_binary(entry.subscription), "the message metadata carries no subscription")
+        check!(is_integer(entry.received_at), "the message metadata carries no receive time")
 
-      encoded = entry.produce["dd-pathway-ctx-base64"]
-      check!(encoded != nil, "a published message carries no pathway attribute")
+        parent = if entry.inbound, do: entry.inbound.hash, else: 0
+        consume_hash = Pathway.pathway_hash(node_hash(consume_tags(entry.subscription)), parent)
+        received_ms = System.convert_time_unit(entry.received_at, :native, :millisecond)
 
-      expected =
-        DdDataStreams.Pathway.node_hash("checkout", "prod", nil, [
-          "direction:out",
-          "topic:#{E2e.Resources.out_topic()}",
-          "type:google-pubsub"
-        ])
-        |> then(&DdDataStreams.Pathway.pathway_hash(&1, entry.checkpoint.hash))
-
-      {:ok, decoded} = DdDataStreams.Propagator.decode_str(encoded)
-      check!(decoded.hash == expected, "the produce header does not chain onto the consume checkpoint")
-
-      if entry.inbound do
         check!(
-          decoded.pathway_start == entry.inbound.pathway_start,
+          entry.consume.hash == consume_hash,
+          "the consume pathway does not chain onto the inbound pathway"
+        )
+
+        check!(
+          entry.consume.edge_start == received_ms,
+          "the consume checkpoint is not stamped with the receive time"
+        )
+
+        check!(
+          entry.consume.pathway_start == pathway_start(entry, received_ms),
+          "the consume checkpoint moved the pathway start"
+        )
+
+        encoded = entry.produce["dd-pathway-ctx-base64"]
+        check!(encoded != nil, "a published message carries no pathway attribute")
+
+        produce_hash =
+          Pathway.pathway_hash(node_hash(produce_tags(E2e.Resources.out_topic())), consume_hash)
+
+        {:ok, decoded} = Propagator.decode_str(encoded)
+
+        check!(
+          decoded.hash == produce_hash,
+          "the produce header does not chain onto the consume checkpoint"
+        )
+
+        check!(
+          decoded.pathway_start == entry.consume.pathway_start,
           "the produce header moved the pathway start"
         )
+
+        %{parent: parent, consume_hash: consume_hash, produce_hash: produce_hash}
       end
-    end
 
     published = Enum.map(out_messages, & &1["message"]["attributes"]["dd-pathway-ctx-base64"])
-    check!(length(published) == 2, "expected two messages on the out topic, saw #{length(published)}")
-    check!(Enum.all?(published, &is_binary/1), "a published message reached the broker without a pathway attribute")
+
+    check!(
+      length(published) == 2,
+      "expected two messages on the out topic, saw #{length(published)}"
+    )
+
+    check!(
+      Enum.all?(published, &is_binary/1),
+      "a published message reached the broker without a pathway attribute"
+    )
 
     check!(captured != [], "the aggregator flushed nothing to the agent")
-    check!(E2e.FlushErrors.count() == 0, "the aggregator reported #{E2e.FlushErrors.count()} flush errors")
+
+    check!(
+      E2e.FlushErrors.count() == 0,
+      "the aggregator reported #{E2e.FlushErrors.count()} flush errors"
+    )
 
     if decoder_output do
       for tag <- ["direction:in", "direction:out", "type:google-pubsub"] do
-        check!(String.contains?(decoder_output, tag), "the decoder did not find #{tag} in the payload")
+        check!(
+          String.contains?(decoder_output, tag),
+          "the decoder did not find #{tag} in the payload"
+        )
       end
 
-      for {_data, entry} <- entries do
-        for hash <- [entry.checkpoint.hash, entry.checkpoint.parent_hash], hash > 0 do
-          check!(
-            String.contains?(decoder_output, Integer.to_string(hash)),
-            "the payload the agent would receive does not contain hash #{hash}"
-          )
-        end
+      for entry <- checked,
+          hash <- [entry.consume_hash, entry.produce_hash, entry.parent],
+          hash > 0 do
+        check!(
+          String.contains?(decoder_output, Integer.to_string(hash)),
+          "the payload the agent would receive does not contain hash #{hash}"
+        )
       end
     end
 
     IO.puts("\n== VERIFIED ==")
   end
+
+  defp node_hash(tags) do
+    Pathway.node_hash(Config.service(), Config.env(), Config.primary_tag(), tags)
+  end
+
+  defp consume_tags(subscription) do
+    ["direction:in", "subscription:" <> subscription, "type:google-pubsub"]
+  end
+
+  defp produce_tags(topic) do
+    ["direction:out", "topic:" <> topic, "type:google-pubsub"]
+  end
+
+  defp pathway_start(%{inbound: nil}, received_ms), do: received_ms
+  defp pathway_start(%{inbound: inbound}, _received_ms), do: inbound.pathway_start
 
   defp check!(true, _message), do: :ok
   defp check!(false, message), do: raise("verification failed: #{message}")
