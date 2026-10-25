@@ -357,17 +357,22 @@ defmodule DdDataStreams do
         |> Enum.map(&checkpointed/1)
         |> Enum.reject(&is_nil/1)
 
-      pathways = for {_extractor, {pathway, _checkpoint}} <- resolved, do: pathway
-
-      # The batch stage is another process, so it needs the extractor the messages
-      # were consumed with for its own produce edges.
-      extractor =
+      # Sample one consumed message's pathway and extractor together, so a
+      # mixed-broker batch cannot pair one broker's pathway with another's
+      # extractor.
+      {pathway, extractor} =
         case resolved do
-          [{extractor, _checkpointed} | _] -> extractor
-          [] -> nil
+          [] ->
+            {Pathway.merge([]), nil}
+
+          _ ->
+            {extractor, {pathway, _checkpoint}} = Enum.random(resolved)
+            {pathway, extractor}
         end
 
-      Context.put(Pathway.merge(pathways), extractor)
+      # The batch stage is another process, so it needs the extractor the sampled
+      # message was consumed with for its own produce edges.
+      Context.put(pathway, extractor)
     rescue
       error -> skipped(@fan_in_event, error, __STACKTRACE__)
     catch

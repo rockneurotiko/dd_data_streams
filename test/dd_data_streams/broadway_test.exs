@@ -428,6 +428,80 @@ defmodule DdDataStreams.BroadwayTest do
     assert Context.get_extractor() == nil
   end
 
+  test "fan-in keeps the sampled pathway and its extractor together (kafka first)" do
+    kafka_extractors()
+    assert :ok = DdDataStreams.attach()
+
+    kafka_msg = %{
+      data: "hello",
+      metadata: %{topic: "orders", headers: [], ts: 1_700_000_000_000, partition: 1}
+    }
+
+    pubsub_msg = pubsub_message(nil)
+
+    consume_event(kafka_msg)
+    assert_receive {:checkpoint, kafka_consume}
+    consume_event(pubsub_msg)
+    assert_receive {:checkpoint, _pubsub_consume}
+
+    batch_event([kafka_msg, pubsub_msg])
+
+    sampled = Context.get()
+    extractor = Context.get_extractor()
+    assert %Pathway{} = sampled
+
+    assert extractor in [
+             DdDataStreams.BroadwayTest.KafkaExtractor,
+             DdDataStreams.Extractor.GooglePubSub
+           ]
+
+    expected_type =
+      if sampled.hash == kafka_consume.hash do
+        "kafka"
+      else
+        "google-pubsub"
+      end
+
+    assert Enum.any?(extractor.produce("orders-out"), &(&1 == "type:" <> expected_type))
+  end
+
+  test "fan-in keeps the sampled pathway and its extractor together (pubsub first)" do
+    kafka_extractors()
+    assert :ok = DdDataStreams.attach()
+
+    kafka_msg = %{
+      data: "hello",
+      metadata: %{topic: "orders", headers: [], ts: 1_700_000_000_000, partition: 1}
+    }
+
+    pubsub_msg = pubsub_message(nil)
+
+    consume_event(pubsub_msg)
+    assert_receive {:checkpoint, _pubsub_consume}
+    consume_event(kafka_msg)
+    assert_receive {:checkpoint, kafka_consume}
+
+    batch_event([pubsub_msg, kafka_msg])
+
+    sampled = Context.get()
+    extractor = Context.get_extractor()
+    assert %Pathway{} = sampled
+
+    assert extractor in [
+             DdDataStreams.BroadwayTest.KafkaExtractor,
+             DdDataStreams.Extractor.GooglePubSub
+           ]
+
+    expected_type =
+      if sampled.hash == kafka_consume.hash do
+        "kafka"
+      else
+        "google-pubsub"
+      end
+
+    assert Enum.any?(extractor.produce("orders-out"), &(&1 == "type:" <> expected_type))
+  end
+
   test "a produce with no consuming stage needs one extractor to be configured" do
     assert :ok = DdDataStreams.attach()
 
