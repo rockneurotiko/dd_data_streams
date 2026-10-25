@@ -44,7 +44,13 @@ defmodule DdDataStreams.Pathway do
           edge_latency: non_neg_integer()
         }
 
-  defstruct hash: 0, pathway_start: 0, edge_start: 0, extractor: nil
+  defstruct hash: 0,
+            pathway_start: 0,
+            edge_start: 0,
+            extractor: nil,
+            previous_direction: nil,
+            closest_opposite_direction_hash: 0,
+            closest_opposite_direction_edge_start: 0
 
   @doc """
   Builds a pathway from the given fields, defaulting missing ones to zero.
@@ -63,7 +69,11 @@ defmodule DdDataStreams.Pathway do
       hash: Map.get(fields, :hash, 0),
       pathway_start: Map.get(fields, :pathway_start, 0),
       edge_start: Map.get(fields, :edge_start, 0),
-      extractor: Map.get(fields, :extractor, nil)
+      extractor: Map.get(fields, :extractor, nil),
+      previous_direction: Map.get(fields, :previous_direction, nil),
+      closest_opposite_direction_hash: Map.get(fields, :closest_opposite_direction_hash, 0),
+      closest_opposite_direction_edge_start:
+        Map.get(fields, :closest_opposite_direction_edge_start, 0)
     }
   end
 
@@ -123,10 +133,39 @@ defmodule DdDataStreams.Pathway do
 
     pathway =
       if pathway.pathway_start == 0 do
-        start = Keyword.get(opts, :pathway_start, now)
-        %{pathway | pathway_start: start, edge_start: start}
+        %{pathway | pathway_start: now, edge_start: now}
       else
         pathway
+      end
+
+    direction =
+      Enum.find_value(tags, nil, fn
+        "direction:" <> _ = tag -> tag
+        _ -> nil
+      end)
+
+    {pathway, parent_hash} =
+      if not is_nil(pathway.previous_direction) and pathway.previous_direction == direction do
+        parent = pathway.closest_opposite_direction_hash
+
+        pathway =
+          if parent == 0 do
+            %{pathway | pathway_start: now, edge_start: now}
+          else
+            %{pathway | edge_start: pathway.closest_opposite_direction_edge_start}
+          end
+
+        {pathway, parent}
+      else
+        {
+          %{
+            pathway
+            | previous_direction: direction,
+              closest_opposite_direction_hash: pathway.hash,
+              closest_opposite_direction_edge_start: now
+          },
+          pathway.hash
+        }
       end
 
     pathway =
@@ -140,8 +179,6 @@ defmodule DdDataStreams.Pathway do
         {:ok, pathway_start} -> %{pathway | pathway_start: pathway_start}
         :error -> pathway
       end
-
-    parent_hash = pathway.hash
 
     hash =
       node_hash(

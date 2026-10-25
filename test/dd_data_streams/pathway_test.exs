@@ -92,7 +92,10 @@ defmodule DdDataStreams.PathwayTest do
     assert pathway == %Pathway{
              hash: @consume_pathway_hash,
              pathway_start: 1_000,
-             edge_start: 1_000
+             edge_start: 1_000,
+             previous_direction: "direction:in",
+             closest_opposite_direction_hash: 0,
+             closest_opposite_direction_edge_start: 1_000
            }
 
     assert checkpoint == %{
@@ -123,7 +126,10 @@ defmodule DdDataStreams.PathwayTest do
     assert produced == %Pathway{
              hash: @chained_produce_hash,
              pathway_start: 1_000,
-             edge_start: 1_500
+             edge_start: 1_500,
+             previous_direction: "direction:out",
+             closest_opposite_direction_hash: @consume_pathway_hash,
+             closest_opposite_direction_edge_start: 1_500
            }
 
     assert checkpoint == %{
@@ -134,6 +140,53 @@ defmodule DdDataStreams.PathwayTest do
              pathway_latency: 500,
              edge_latency: 500
            }
+  end
+
+  test "repeated same-direction checkpoints reuse the last opposite direction as parent" do
+    {consumed, _checkpoint} =
+      Pathway.set_checkpoint(%Pathway{}, @consume_tags,
+        service: "checkout",
+        env: "prod",
+        now: 1_000
+      )
+
+    {produced, _first_produce} =
+      Pathway.set_checkpoint(consumed, @produce_tags,
+        service: "checkout",
+        env: "prod",
+        now: 1_500
+      )
+
+    {repeated, checkpoint} =
+      Pathway.set_checkpoint(produced, @produce_tags,
+        service: "checkout",
+        env: "prod",
+        now: 2_000
+      )
+
+    assert checkpoint.parent_hash == consumed.hash
+    assert checkpoint.edge_latency == 500
+    assert repeated.previous_direction == "direction:out"
+  end
+
+  test "a produce-only same-direction loop restarts a fresh pathway" do
+    {first, _checkpoint} =
+      Pathway.set_checkpoint(%Pathway{}, @produce_tags,
+        service: "checkout",
+        env: "prod",
+        now: 1_000
+      )
+
+    {second, checkpoint} =
+      Pathway.set_checkpoint(first, @produce_tags,
+        service: "checkout",
+        env: "prod",
+        now: 1_500
+      )
+
+    assert checkpoint.parent_hash == 0
+    assert second.pathway_start == 1_500
+    assert second.edge_start == 1_500
   end
 
   test "start overrides measure from the broker time rather than the local clock" do

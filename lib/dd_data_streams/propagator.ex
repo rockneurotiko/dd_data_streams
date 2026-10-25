@@ -183,7 +183,10 @@ defmodule DdDataStreams.Propagator do
        %Pathway{
          hash: hash,
          pathway_start: pathway_start,
-         edge_start: edge_start
+         edge_start: edge_start,
+         previous_direction: nil,
+         closest_opposite_direction_hash: 0,
+         closest_opposite_direction_edge_start: 0
        }}
     else
       _ -> :error
