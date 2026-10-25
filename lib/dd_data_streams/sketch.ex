@@ -4,10 +4,12 @@ defmodule DdDataStreams.Sketch do
   that a whole distribution serialises into a compact protobuf message.
 
   Only what the datastreams wire format needs is implemented: `new/0`, `add/2`
-  and `to_proto/1`. The mapping is the one dd-trace-go and dd-trace-java emit,
-  gamma 1.015625 with index offset 1.8761281912861705, so the bins of a
-  distribution line up with the Datadog backend. The store is dense, so the
-  encoded bin counts are contiguous with empty bins written as zeros.
+  and `to_proto/1`. The mapping is the one dd-trace-go v2.11.2/v2.13 and
+  dd-trace-java 1.67.1 emit, gamma 1.015625 with index offset
+  1.8761281912861705; the mapping is self-describing in the payload (gamma and
+  offset travel with it). dd-trace-py uses offset 1338.5, so its bins do not
+  line up with Go/Java. The store is dense, so the encoded bin counts are
+  contiguous with empty bins written as zeros.
 
   Values whose magnitude is too small to map count as zero, and negative values
   are counted in a second store, indexed by their magnitude.
