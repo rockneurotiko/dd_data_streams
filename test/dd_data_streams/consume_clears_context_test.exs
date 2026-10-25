@@ -49,7 +49,7 @@ defmodule DdDataStreams.ConsumeClearsContextTest do
     assert DdDataStreams.consume(no_match) == nil
     assert Context.get() == nil
 
-    assert {key, _value} = DdDataStreams.produce("orders", "payload")
+    assert [{key, _value}] = DdDataStreams.produce("orders", "payload")
     assert key == "dd-pathway-ctx-base64"
 
     assert_receive {:checkpoint, produce_checkpoint}

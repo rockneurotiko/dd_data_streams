@@ -55,7 +55,7 @@ defmodule DdDataStreams.PipelineTest do
 
     # The consume checkpoint is the one the processor stage recorded for this
     # message, and the pathway it left there is the one the stage answers from.
-    assert_receive {:processor, processor, %Pathway{} = pathway, {key, value}}
+    assert_receive {:processor, processor, %Pathway{} = pathway, [{key, value}]}
     assert pathway.hash == consumed.hash
     assert key == "dd-pathway-ctx-base64"
     assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
@@ -63,7 +63,7 @@ defmodule DdDataStreams.PipelineTest do
 
     # Fan-in: the batch stage is another process, so the pathway it was handed
     # is the only one it can answer the batch from.
-    assert_receive {:batcher, batcher, %Pathway{} = merged, {^key, batch_value}}
+    assert_receive {:batcher, batcher, %Pathway{} = merged, [{^key, batch_value}]}
     assert merged.hash == consumed.hash
     refute batcher == processor
     assert {:ok, %Pathway{hash: ^hash}} = Propagator.decode_str(batch_value)
@@ -82,7 +82,7 @@ defmodule DdDataStreams.PipelineTest do
 
     # Fan-in keeps one pathway of the batch's, so the whole batch is published
     # onto it.
-    assert_receive {:batcher, _batcher, %Pathway{} = merged, {_key, value}}
+    assert_receive {:batcher, _batcher, %Pathway{} = merged, [{_key, value}]}
     assert merged.hash in Enum.map(consumed, & &1.hash)
     assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
 

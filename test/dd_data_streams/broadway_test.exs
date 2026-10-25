@@ -124,7 +124,7 @@ defmodule DdDataStreams.BroadwayTest do
     assert_receive {:checkpoint, consumed}
 
     # What handle_message/3 does with the pathway its stage was given.
-    {key, value} = DdDataStreams.produce("orders", "hello")
+    [{key, value}] = DdDataStreams.produce("orders", "hello")
 
     assert_receive {:checkpoint, produced}
     refute_receive {:checkpoint, _second}
@@ -148,7 +148,7 @@ defmodule DdDataStreams.BroadwayTest do
   test "both sides of one edge measure the same payload" do
     assert :ok = DdDataStreams.attach()
 
-    {key, value} = DdDataStreams.produce("orders", "hello")
+    [{key, value}] = DdDataStreams.produce("orders", "hello")
     assert_receive {:checkpoint, produced}
 
     # What the receiving pipeline gets: the data and the header this library
@@ -170,7 +170,7 @@ defmodule DdDataStreams.BroadwayTest do
   test "produce reports a payload size given in the options" do
     assert :ok = DdDataStreams.attach()
 
-    assert {key, value} = DdDataStreams.produce("orders", "hello", payload_size: 42)
+    assert [{key, value}] = DdDataStreams.produce("orders", "hello", payload_size: 42)
 
     assert_receive {:checkpoint, checkpoint}
     # The given size plus the injected header key and value.
@@ -184,7 +184,7 @@ defmodule DdDataStreams.BroadwayTest do
 
     assert :ok = DdDataStreams.attach()
 
-    assert {"x-pathway", value} = DdDataStreams.produce("orders", "hello")
+    assert [{"x-pathway", value}] = DdDataStreams.produce("orders", "hello")
     assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
 
     assert_receive {:checkpoint, checkpoint}
@@ -237,7 +237,7 @@ defmodule DdDataStreams.BroadwayTest do
     # handle_batch/4 answering the batch with one message per consumed message.
     published =
       for _ <- messages do
-        {_key, value} = DdDataStreams.produce("orders", "hello")
+        [{_key, value}] = DdDataStreams.produce("orders", "hello")
         assert_receive {:checkpoint, checkpoint}
         {checkpoint, value}
       end
@@ -263,7 +263,7 @@ defmodule DdDataStreams.BroadwayTest do
     consume_event(message)
     assert_receive {:checkpoint, consumed}
 
-    {key, value} =
+    [{key, value}] =
       DdDataStreams.produce_batch("orders", Stream.map(["one", "two", "three"], & &1))
 
     assert key == "dd-pathway-ctx-base64"
@@ -353,7 +353,7 @@ defmodule DdDataStreams.BroadwayTest do
 
     # The stage producing from that message reports its edge with the same
     # extractor, and returns the pair its draw client would write.
-    {_key, value} = DdDataStreams.produce("orders-out", "hello")
+    [{_key, value}] = DdDataStreams.produce("orders-out", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.tags == ["direction:out", "topic:orders-out", "type:kafka"]
@@ -415,7 +415,7 @@ defmodule DdDataStreams.BroadwayTest do
     # with the fan-in pathway for its own produce edge to be named.
     batch_event(messages)
 
-    {_key, value} = DdDataStreams.produce("orders-out", "hello")
+    [{_key, value}] = DdDataStreams.produce("orders-out", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.tags == ["direction:out", "topic:orders-out", "type:kafka"]
@@ -522,7 +522,7 @@ defmodule DdDataStreams.BroadwayTest do
   test "a produce with no consuming stage needs one extractor to be configured" do
     assert :ok = DdDataStreams.attach()
 
-    assert {"dd-pathway-ctx-base64", value} = DdDataStreams.produce("orders", "hello")
+    assert [{"dd-pathway-ctx-base64", value}] = DdDataStreams.produce("orders", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.tags == @produce_tags
@@ -580,7 +580,7 @@ defmodule DdDataStreams.BroadwayTest do
     refute_receive {:checkpoint, _second}
     assert Context.get() == nil
 
-    {key, value} = DdDataStreams.produce("orders", "hello")
+    [{key, value}] = DdDataStreams.produce("orders", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.parent_hash == 0
@@ -612,9 +612,9 @@ defmodule DdDataStreams.BroadwayTest do
     consume_event(pubsub_message(nil))
     refute_receive {:checkpoint, _checkpoint}
 
-    assert DdDataStreams.produce("orders", "hello") == nil
-    assert DdDataStreams.produce_batch("orders", ["hello"]) == nil
-    assert DdDataStreams.produce_batch("orders", []) == nil
+    assert DdDataStreams.produce("orders", "hello") == []
+    assert DdDataStreams.produce_batch("orders", ["hello"]) == []
+    assert DdDataStreams.produce_batch("orders", []) == []
     refute_receive {:checkpoint, _checkpoint}
   end
 

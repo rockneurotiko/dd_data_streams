@@ -94,8 +94,8 @@ defmodule E2e.Pipeline do
 
     attributes =
       case DdDataStreams.produce(E2e.Resources.out_topic(), outgoing_data) do
-        {key, value} -> %{key => value}
-        nil -> %{}
+        [{key, value}] -> %{key => value}
+        [] -> %{}
       end
 
     outgoing = %{data: outgoing_data, attributes: attributes, ordering_key: nil}

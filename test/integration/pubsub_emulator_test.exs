@@ -185,7 +185,7 @@ defmodule DdDataStreams.PubSubEmulatorTest do
     produce_tags = ["direction:out", "topic:#{names.out_topic}", "type:google-pubsub"]
 
     reply_data = "reply:" <> data
-    {key, value} = DdDataStreams.produce(names.out_topic, reply_data)
+    [{key, value}] = DdDataStreams.produce(names.out_topic, reply_data)
     assert [out_message_id] = publish(names.out_topic, reply_data, %{key => value})
 
     assert is_binary(out_message_id)

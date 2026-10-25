@@ -67,8 +67,8 @@ attribute's JSON rather than adding it as a separate attribute:
 
 ```elixir
 attributes = case DdDataStreams.produce("orders", data) do
-  {key, value} -> %{"_datadog" => Jason.encode!(%{key => value})}
-  nil -> %{}
+  [{key, value}] -> %{"_datadog" => Jason.encode!(%{key => value})}
+  [] -> %{}
 end
 ```
 
@@ -110,8 +110,8 @@ defmodule MyApp.Orders do
 
     attributes =
       case DdDataStreams.produce("orders", data) do
-        {key, value} -> %{key => value}
-        nil -> %{}
+        [{key, value}] -> %{key => value}
+        [] -> %{}
       end
 
     MyApp.PubSub.publish("orders", data, attributes: attributes)
@@ -119,8 +119,8 @@ defmodule MyApp.Orders do
 end
 ```
 
-`produce/3` records the produce checkpoint and returns `{key, value}`; `nil`
-means the library is disabled, so there is nothing to add. The key is
+`produce/3` records the produce checkpoint and returns a list containing
+`{key, value}`; `[]` means the library is disabled, so there is nothing to add. The key is
 `"dd-pathway-ctx-base64"` unless configured (see
 [Configuration](#configuration)), and the value is the encoded pathway.
 
@@ -133,9 +133,8 @@ def publish_orders(orders) do
 
   attributes =
     case DdDataStreams.produce_batch("orders", payloads) do
-      {key, value} -> %{key => value}
+      [{key, value}] -> %{key => value}
       [] -> %{}
-      nil -> %{}
     end
 
   MyApp.PubSub.publish_batch("orders", payloads, attributes: attributes)
@@ -145,12 +144,12 @@ end
 Kafka uses the same pair as a header:
 
 ```elixir
-{key, value} = DdDataStreams.produce("orders", data)
+[{key, value}] = DdDataStreams.produce("orders", data)
 MyApp.Kafka.produce("orders", data, headers: [{key, value}])
 ```
 
-The `{key, value}` pattern assumes the library is enabled; the Pub/Sub example
-shows the `nil` branch.
+The `[...]` pattern assumes the library is enabled; the Pub/Sub example
+shows the `[]` branch.
 
 Call `produce/3` immediately before the send. The checkpoint is recorded when
 the function runs, so a send that never happens still reports a produce.
@@ -179,8 +178,8 @@ defmodule MyApp.Pipeline do
 
     attributes =
       case DdDataStreams.produce("orders-out", data) do
-        {key, value} -> %{key => value}
-        nil -> %{}
+        [{key, value}] -> %{key => value}
+        [] -> %{}
       end
 
     MyApp.PubSub.publish("orders-out", data, attributes: attributes)
@@ -210,8 +209,8 @@ A pipeline that does not use Broadway can call `consume/1` itself:
 # In the same process:
 out_attributes =
   case DdDataStreams.produce("orders-out", out_data) do
-    {key, value} -> %{key => value}
-    nil -> %{}
+    [{key, value}] -> %{key => value}
+    [] -> %{}
   end
 
 MyApp.PubSub.publish("orders-out", out_data, attributes: out_attributes)
@@ -325,8 +324,8 @@ def handle_message(_processor, message, _context) do
     case DdDataStreams.produce("orders-out", data,
            extractor: DdDataStreams.Extractor.GooglePubSub
          ) do
-      {key, value} -> %{key => value}
-      nil -> %{}
+      [{key, value}] -> %{key => value}
+      [] -> %{}
     end
 
   MyApp.PubSub.publish("orders-out", data, attributes: attributes)
@@ -347,8 +346,8 @@ def handle_message(_processor, message, _context) do
 
   attributes =
     case DdDataStreams.produce("orders-out", data) do
-      {key, value} -> %{key => value}
-      nil -> %{}
+      [{key, value}] -> %{key => value}
+      [] -> %{}
     end
 
   MyApp.PubSub.publish("orders-out", data, attributes: attributes)
@@ -360,7 +359,7 @@ The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
 configured. A client that takes a header list uses the same pair:
 
 ```elixir
-{key, value} = DdDataStreams.produce("orders-out", data)
+[{key, value}] = DdDataStreams.produce("orders-out", data)
 MyApp.Kafka.produce("orders-out", data, headers: [{key, value}])
 ```
 
@@ -381,9 +380,8 @@ def handle_batch(_processor, messages, _batch_info, _context) do
 
   attributes =
     case DdDataStreams.produce_batch("orders-out", payloads) do
-      {key, value} -> %{key => value}
+      [{key, value}] -> %{key => value}
       [] -> %{}
-      nil -> %{}
     end
 
   MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)
@@ -427,8 +425,8 @@ data = encode(reply)
 
 attributes =
   case DdDataStreams.produce("orders-out", data) do
-    {key, value} -> %{key => value}
-    nil -> %{}
+    [{key, value}] -> %{key => value}
+    [] -> %{}
   end
 
 MyApp.PubSub.publish("orders-out", data, attributes: attributes)

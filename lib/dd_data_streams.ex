@@ -36,8 +36,8 @@ defmodule DdDataStreams do
 
         attributes =
           case DdDataStreams.produce("orders-out", data) do
-            {key, value} -> %{key => value}
-            nil -> %{}
+            [{key, value}] -> %{key => value}
+            [] -> %{}
           end
 
         MyApp.Publisher.publish("orders-out", data, attributes: attributes)
@@ -189,8 +189,8 @@ defmodule DdDataStreams do
   receiver will read:
 
       case DdDataStreams.produce("orders-out", data) do
-        {key, value} -> MyApp.PubSub.publish("orders-out", data, attributes: %{key => value})
-        nil -> MyApp.PubSub.publish("orders-out", data)
+        [{key, value}] -> MyApp.PubSub.publish("orders-out", data, attributes: %{key => value})
+        [] -> MyApp.PubSub.publish("orders-out", data)
       end
 
   The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
@@ -234,21 +234,25 @@ defmodule DdDataStreams do
       Defaults to the size of `data`. The pair this function returns is added to
       it, so pass the size of the message without that pair.
 
-  Returns `nil` when the library is disabled, and records nothing.
+  Returns `[]` when the library is disabled, and records nothing.
   """
-  @spec produce(String.t(), term(), keyword()) :: propagation() | nil
+  @spec produce(String.t(), term(), keyword()) :: [propagation()]
   def produce(topic, data, opts \\ []) when is_binary(topic) do
+    size = payload_size(data, opts)
+
     if Config.enabled?() do
       {pathway, checkpoint} =
         Checkpoints.produce(
           produce_tags(topic, opts),
           Context.get() || Pathway.new(%{}),
-          payload_size(data, opts)
+          size
         )
 
       pair = {Config.header(), Propagator.encode_str(pathway)}
       Aggregator.add(%{checkpoint | payload_size: checkpoint.payload_size + header_size(pair)})
-      pair
+      [pair]
+    else
+      []
     end
   end
 
@@ -262,9 +266,8 @@ defmodule DdDataStreams do
 
       attributes =
         case DdDataStreams.produce_batch("orders-out", payloads) do
-          {key, value} -> %{key => value}
+          [{key, value}] -> %{key => value}
           [] -> %{}
-          nil -> %{}
         end
 
       MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)
@@ -272,7 +275,7 @@ defmodule DdDataStreams do
   Each payload records its own checkpoint with its own size, but all of them
   have the same hash and timestamp, so the batch is one produce edge. `datas`
   is any `Enumerable`; it is materialised once. An empty enumerable returns
-  `[]`; a disabled library returns `nil`.
+  `[]`; a disabled library returns `[]`.
 
   Payload size is `byte_size/1` per binary payload, or zero otherwise, plus the
   size of the pair this function returns, as `produce/3` does. There is no
@@ -282,15 +285,20 @@ defmodule DdDataStreams do
   The `:extractor` option is the same as for `produce/3`. Call it immediately
   before the batch send, for the same reason as `produce/3`.
   """
-  @spec produce_batch(String.t(), Enumerable.t(), keyword()) :: propagation() | [] | nil
+  @spec produce_batch(String.t(), Enumerable.t(), keyword()) :: [propagation()]
   def produce_batch(topic, datas, opts \\ []) when is_binary(topic) do
-    if Config.enabled?() do
-      if Keyword.has_key?(opts, :payload_size) do
-        raise ArgumentError,
-              ":payload_size is not supported by produce_batch/3; call produce/3 per message"
-      end
+    if Keyword.has_key?(opts, :payload_size) do
+      raise ArgumentError,
+            ":payload_size is not supported by produce_batch/3; call produce/3 per message"
+    end
 
-      produce_all(topic, Enum.to_list(datas), opts)
+    if Config.enabled?() do
+      case produce_all(topic, Enum.to_list(datas), opts) do
+        [] -> []
+        pair -> [pair]
+      end
+    else
+      []
     end
   end
 
