@@ -28,6 +28,10 @@ defmodule DdDataStreams.Aggregator do
   One payload and one request are built per service. The transport and the
   agent URL are read from `DdDataStreams.Config` on every flush, so a change to
   either applies to the next one.
+
+  A checkpoint that cannot be aggregated is dropped instead of counted: it is
+  logged and reported in `[:dd_data_streams, :checkpoint, :invalid]` telemetry
+  with a `count` measurement, and nothing is raised.
   """
 
   use GenServer
@@ -52,6 +56,7 @@ defmodule DdDataStreams.Aggregator do
   @shutdown_flush_ms 10_000
   @headers [{"content-type", "application/msgpack"}, {"content-encoding", "gzip"}]
   @error_event [:dd_data_streams, :flush, :error]
+  @invalid_event [:dd_data_streams, :checkpoint, :invalid]
 
   @typedoc """
   A checkpoint with the size of the message it was recorded for, which
@@ -119,8 +124,49 @@ defmodule DdDataStreams.Aggregator do
 
   @impl true
   def handle_cast({:add, checkpoint}, state) do
-    {:noreply, %{state | buckets: add_checkpoint(state.buckets, checkpoint)}}
+    case normalise(checkpoint) do
+      {:ok, checkpoint} ->
+        {:noreply, %{state | buckets: add_checkpoint(state.buckets, checkpoint)}}
+
+      :error ->
+        invalid(Config.service(), checkpoint)
+        {:noreply, state}
+    end
   end
+
+  # Only a checkpoint that every bucket can carry is kept. The latencies and
+  # the payload size default to zero, because a checkpoint that measured
+  # nothing is incomplete rather than malformed; only binary tags are kept, so
+  # one tag that cannot be encoded does not cost the whole flush.
+  defp normalise(checkpoint) when is_map(checkpoint) do
+    tags = Map.get(checkpoint, :tags)
+
+    with true <- is_integer(Map.get(checkpoint, :timestamp)),
+         true <- is_list(tags),
+         true <- present?(checkpoint, :hash),
+         true <- present?(checkpoint, :parent_hash),
+         {:ok, pathway_latency} <- quantity(Map.get(checkpoint, :pathway_latency)),
+         {:ok, edge_latency} <- quantity(Map.get(checkpoint, :edge_latency)),
+         {:ok, payload_size} <- quantity(Map.get(checkpoint, :payload_size)) do
+      {:ok,
+       Map.merge(checkpoint, %{
+         tags: Enum.filter(tags, &is_binary/1),
+         pathway_latency: pathway_latency,
+         edge_latency: edge_latency,
+         payload_size: payload_size
+       })}
+    else
+      _ -> :error
+    end
+  end
+
+  defp normalise(_checkpoint), do: :error
+
+  defp present?(checkpoint, key), do: not is_nil(Map.get(checkpoint, key))
+
+  defp quantity(nil), do: {:ok, 0}
+  defp quantity(value) when is_integer(value), do: {:ok, value}
+  defp quantity(_value), do: :error
 
   @impl true
   def handle_call(:flush, _from, state) do
@@ -304,6 +350,14 @@ defmodule DdDataStreams.Aggregator do
     )
 
     :telemetry.execute(@error_event, %{count: 1}, %{service: service, reason: reason})
+
+    :ok
+  end
+
+  defp invalid(service, checkpoint) do
+    Logger.warning("dropped a malformed checkpoint of #{service}: #{inspect(checkpoint)}")
+
+    :telemetry.execute(@invalid_event, %{count: 1}, %{service: service, checkpoint: checkpoint})
 
     :ok
   end

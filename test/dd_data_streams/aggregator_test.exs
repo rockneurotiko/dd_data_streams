@@ -93,7 +93,21 @@ defmodule DdDataStreams.AggregatorTest do
       nil
     )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    invalid_handler = "invalid-checkpoint-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      invalid_handler,
+      [:dd_data_streams, :checkpoint, :invalid],
+      fn _event, measurements, metadata, _config ->
+        send(test, {:invalid_checkpoint, measurements, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn ->
+      :telemetry.detach(handler)
+      :telemetry.detach(invalid_handler)
+    end)
 
     :ok
   end
@@ -143,6 +157,65 @@ defmodule DdDataStreams.AggregatorTest do
 
     assert [[_url, _headers, body]] = posts()
     assert :zlib.gunzip(body) =~ "subscription:orders-sub"
+  end
+
+  test "a checkpoint that cannot be aggregated is dropped and counted" do
+    # Each of these reaches neither bucket, and crashes the aggregator if it
+    # does.
+    for {shape, checkpoint} <- [
+          {"no timestamp", Map.delete(@checkpoint, :timestamp)},
+          {"nil timestamp", %{@checkpoint | timestamp: nil}},
+          {"nil tags", %{@checkpoint | tags: nil}},
+          {"no hash", Map.delete(@checkpoint, :hash)},
+          {"no parent hash", Map.delete(@checkpoint, :parent_hash)}
+        ] do
+      pid = start_aggregator()
+
+      assert :ok = Aggregator.add(checkpoint), shape
+      assert Process.alive?(pid), shape
+
+      assert_receive {:invalid_checkpoint, %{count: 1}, %{service: "checkout"}}, 100, shape
+
+      assert :ok = Aggregator.flush()
+      assert posts() == [], shape
+      assert %{buckets: %{}} = :sys.get_state(pid), shape
+
+      stop_supervised!(DdDataStreams.Aggregator)
+    end
+  end
+
+  test "latencies and a payload size that are nil count as zero" do
+    pid = start_aggregator()
+
+    checkpoint = %{
+      @checkpoint
+      | pathway_latency: nil,
+        edge_latency: nil,
+        payload_size: nil
+    }
+
+    assert :ok = Aggregator.add(checkpoint)
+    assert Process.alive?(pid)
+    refute_received {:invalid_checkpoint, _measurements, _metadata}
+
+    assert [point] = points_of(pid, :current) |> Map.values()
+    assert samples(point) == 1
+
+    assert :ok = Aggregator.flush()
+    assert [[_url, _headers, body]] = posts()
+    assert point_count(body) == 2
+  end
+
+  test "a tag that is not a string is dropped instead of costing the whole flush" do
+    start_aggregator()
+
+    checkpoint = %{@checkpoint | tags: ["direction:in", :not_a_string]}
+    assert :ok = Aggregator.add(checkpoint)
+
+    assert :ok = Aggregator.flush()
+
+    assert [[_url, _headers, body]] = posts()
+    assert :zlib.gunzip(body) =~ "direction:in"
   end
 
   test "the payload size distribution defaults to one zero-byte sample" do
