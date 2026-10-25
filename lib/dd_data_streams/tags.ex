@@ -21,7 +21,7 @@ defmodule DdDataStreams.Tags do
   @aggregation_tags ~w(ds.name ds.namespace manual_checkpoint group consumer_group)
   @value_tags ~w(partition has_routing_key)
 
-  @type tier :: :edge | :hash
+  @type tier :: :edge | :hash | :aggregation
 
   @doc """
   Splits an encoded tag into its key and value.
@@ -59,19 +59,24 @@ defmodule DdDataStreams.Tags do
   @doc """
   Keeps the tags that belong to a tier, preserving their order.
 
-  `:hash` keeps only the tags that identify a node. `:edge` keeps every known
-  tag: the identifying ones, the aggregation ones that split a node's
-  statistics, and the per-message values such as `partition` that are reported
-  but not hashed.
+  `:hash` keeps only the tags that identify a node. `:aggregation` keeps the
+  tags that split a node's statistics without changing its identity. `:edge`
+  keeps every known tag: the identifying ones, the aggregation ones that split
+  a node's statistics, and the per-message values such as `partition` that are
+  reported but not hashed.
 
       iex> tags = ["direction:in", "subscription:orders-sub", "partition:0", "group:workers"]
       iex> DdDataStreams.Tags.filter(tags, :hash)
       ["direction:in", "subscription:orders-sub"]
+      iex> DdDataStreams.Tags.filter(tags, :aggregation)
+      ["group:workers"]
       iex> DdDataStreams.Tags.filter(tags, :edge)
       ["direction:in", "subscription:orders-sub", "partition:0", "group:workers"]
   """
   @spec filter([String.t()], tier()) :: [String.t()]
   def filter(tags, :hash), do: Enum.filter(tags, &(key(&1) in @hash_tags))
+
+  def filter(tags, :aggregation), do: Enum.filter(tags, &(key(&1) in @aggregation_tags))
 
   def filter(tags, :edge) do
     Enum.filter(

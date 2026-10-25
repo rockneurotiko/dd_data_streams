@@ -206,6 +206,90 @@ defmodule DdDataStreams.AggregatorTest do
   # TimestampType field per point.
   defp point_count(body), do: length(:binary.matches(:zlib.gunzip(body), "TimestampType"))
 
+  # The points of one bucket family, read from the state of the aggregator. The
+  # buckets of the other families are skipped, so the family asked for is the
+  # one that is returned.
+  defp points_of(pid, family) do
+    %{buckets: buckets} = :sys.get_state(pid)
+
+    Enum.find_value(
+      buckets,
+      %{},
+      fn
+        {{^family, _service, _start}, points} -> points
+        _other -> nil
+      end
+    )
+  end
+
+  # How many samples the pathway distribution of a point holds.
+  defp samples(point) do
+    point.pathway.positive
+    |> Map.values()
+    |> Enum.sum()
+    |> Kernel.+(point.pathway.zero_count)
+  end
+
+  test "two checkpoints of one node with different aggregation tags are two points" do
+    # Every aggregation tag splits the statistics of the node the same way.
+    for {tag, first, second} <- [
+          {"group", "workers-a", "workers-b"},
+          {"ds.name", "orders", "payments"},
+          {"ds.namespace", "shop", "warehouse"},
+          {"manual_checkpoint", "true", "false"},
+          {"consumer_group", "workers-a", "workers-b"}
+        ] do
+      pid = start_aggregator()
+
+      Aggregator.add(%{@checkpoint | tags: ["direction:in", "#{tag}:#{first}"]})
+      Aggregator.add(%{@checkpoint | tags: ["direction:in", "#{tag}:#{second}"]})
+
+      points = points_of(pid, :current)
+
+      assert map_size(points) == 2
+
+      assert points |> Map.values() |> Enum.map(& &1.edge_tags) |> Enum.sort() ==
+               Enum.sort([
+                 ["direction:in", "#{tag}:#{first}"],
+                 ["direction:in", "#{tag}:#{second}"]
+               ])
+
+      assert points |> Map.values() |> Enum.map(&samples/1) |> Enum.sort() == [1, 1]
+
+      assert :ok = Aggregator.flush()
+
+      assert [[_url, _headers, body]] = posts()
+      payload = :zlib.gunzip(body)
+
+      assert point_count(body) == 4
+      assert payload =~ "#{tag}:#{first}"
+      assert payload =~ "#{tag}:#{second}"
+
+      # The Hash field is the node hash as a uint64, right after its key.
+      assert payload =~ <<0xA4, "Hash", 0xCF, @checkpoint.hash::64>>
+
+      stop_supervised!(DdDataStreams.Aggregator)
+    end
+  end
+
+  test "samples with the same aggregation tags merge into one point, whatever their order" do
+    pid = start_aggregator()
+
+    # The aggregation tags are the same set in another order, so the two
+    # checkpoints are the same split of the same node.
+    Aggregator.add(%{@checkpoint | tags: ["direction:in", "group:workers-a", "ds.name:orders"]})
+    Aggregator.add(%{@checkpoint | tags: ["ds.name:orders", "group:workers-a", "direction:in"]})
+
+    points = points_of(pid, :current)
+
+    assert map_size(points) == 1
+    assert [point] = Map.values(points)
+    assert samples(point) == 2
+
+    # The bucket of the other family is skipped, not raised on.
+    assert map_size(points_of(pid, :origin)) == 1
+  end
+
   test "a transport error is counted and the bucket is dropped without raising" do
     respond_with({:error, :econnrefused})
     pid = start_aggregator()

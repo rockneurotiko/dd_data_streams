@@ -43,6 +43,19 @@ defmodule DdDataStreams.TagsTest do
     assert Tags.filter(tags, :hash) == ["direction:in", "subscription:orders-sub"]
   end
 
+  test "filter/2 :aggregation keeps the tags that split a node's statistics" do
+    tags = [
+      "direction:in",
+      "subscription:orders-sub",
+      "partition:0",
+      "group:workers",
+      "has_routing_key:true",
+      "ds.name:orders"
+    ]
+
+    assert Tags.filter(tags, :aggregation) == ["group:workers", "ds.name:orders"]
+  end
+
   test "filter/2 :edge keeps the identifying, aggregation and per-message tags" do
     tags = [
       "direction:in",

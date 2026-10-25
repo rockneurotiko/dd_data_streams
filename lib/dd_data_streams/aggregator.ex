@@ -7,7 +7,10 @@ defmodule DdDataStreams.Aggregator do
   bucket that contains the start of the pathway (`TimestampType: "origin"`). The
   two entries carry the same distributions; only the bucket start and the
   timestamp type differ. A bucket is identified by its service, its start and
-  which of the two families it belongs to, and its points by their hash.
+  which of the two families it belongs to, and its points by their hash
+  together with their aggregation tags, so that one node whose statistics are
+  split by a `group:` or a `manual_checkpoint:` tag is reported as one point
+  per split.
 
   The three values a point carries are the pathway latency and the edge latency
   in seconds, and the payload size in bytes. Checkpoints measure both latencies
@@ -32,6 +35,7 @@ defmodule DdDataStreams.Aggregator do
   alias DdDataStreams.Config
   alias DdDataStreams.Payload
   alias DdDataStreams.Sketch
+  alias DdDataStreams.Tags
 
   @bucket_duration_ns 10_000_000_000
 
@@ -168,7 +172,7 @@ defmodule DdDataStreams.Aggregator do
     points =
       Map.update(
         points,
-        checkpoint.hash,
+        point_key(checkpoint),
         new_point(checkpoint, pathway_latency, edge_latency, payload_size),
         fn point ->
           %{
@@ -181,6 +185,13 @@ defmodule DdDataStreams.Aggregator do
       )
 
     Map.put(buckets, key, points)
+  end
+
+  # The aggregation tags split a node's statistics without changing its
+  # identity, so they are part of the key of a point; sorted, because the same
+  # tag set in another order is the same split.
+  defp point_key(checkpoint) do
+    {checkpoint.hash, checkpoint.tags |> Tags.filter(:aggregation) |> Enum.sort()}
   end
 
   defp new_point(checkpoint, pathway_latency, edge_latency, payload_size) do
@@ -238,8 +249,8 @@ defmodule DdDataStreams.Aggregator do
 
   defp points_to_maps(points, family) do
     points
-    |> Enum.sort_by(fn {hash, _point} -> hash end)
-    |> Enum.map(fn {hash, point} ->
+    |> Enum.sort_by(fn {{hash, aggregation_tags}, _point} -> {hash, aggregation_tags} end)
+    |> Enum.map(fn {{hash, _aggregation_tags}, point} ->
       %{
         edge_tags: point.edge_tags,
         hash: hash,

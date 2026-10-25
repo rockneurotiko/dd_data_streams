@@ -439,6 +439,11 @@ an internal queue, and takes its edge tags verbatim:
 It does not change the process context; a produce in that stage should continue
 the pathway you passed in.
 
+`manual_checkpoint:true` is an aggregation tag, so it splits the statistics of
+a node: two checkpoints of the same node, meaning the same hash-tier tags and
+therefore the same hash, that differ in their aggregation tags are counted
+apart and reported as separate points that share that hash.
+
 All checkpoints are handed to the aggregator, which is not running while the
 library is disabled, so these calls need no guard at the call site.
 
