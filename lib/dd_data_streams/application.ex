@@ -44,7 +44,16 @@ defmodule DdDataStreams.Application do
   defp children do
     if Config.enabled?() and is_nil(Process.whereis(Aggregator)) do
       warn_if_no_transport()
-      [{Aggregator, []}]
+
+      [
+        %{
+          id: Aggregator,
+          start: {Aggregator, :start_link, [[]]},
+          # Above the transport's own timeout, so a flush that is still talking
+          # to the agent is not cut short by the hidden five-second default.
+          shutdown: 15_000
+        }
+      ]
     else
       []
     end

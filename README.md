@@ -592,7 +592,8 @@ its pathway, as the official tracers do; the two entries differ only in bucket
 start and timestamp type. A bucket is dropped before it is sent, so a failed
 send loses that bucket rather than growing memory; the failure is logged and
 reported through telemetry, and nothing is raised. Stopping the aggregator sends
-the partial bucket too.
+the partial bucket too, unless the agent has not answered within ten seconds,
+in which case the node keeps shutting down without it.
 
 The aggregator is started and supervised by `:dd_data_streams` itself, so the
 host does not add it to its own supervision tree.

@@ -21,7 +21,9 @@ defmodule DdDataStreams.Aggregator do
   is removed before it is sent, so a failed send drops it: it is logged and
   counted in `[:dd_data_streams, :flush, :error]` telemetry with a `count`
   measurement, and nothing is raised. Stopping the process sends everything,
-  including the partial bucket.
+  including the partial bucket, unless the agent has not answered within ten
+  seconds, in which case the send is abandoned and the node keeps shutting
+  down.
 
   One payload and one request are built per service. The transport and the
   agent URL are read from `DdDataStreams.Config` on every flush, so a change to
@@ -43,6 +45,11 @@ defmodule DdDataStreams.Aggregator do
   # instead of kept: a minute is well past any broker clock skew.
   @future_horizon_ns 60_000_000_000
   @flush_interval_ms 10_000
+
+  # The final flush runs inside the supervisor's shutdown budget, so it is
+  # bounded well below it: an agent that does not answer must not hold the
+  # node for the whole budget.
+  @shutdown_flush_ms 10_000
   @headers [{"content-type", "application/msgpack"}, {"content-encoding", "gzip"}]
   @error_event [:dd_data_streams, :flush, :error]
 
@@ -103,6 +110,9 @@ defmodule DdDataStreams.Aggregator do
 
   @impl true
   def init(_opts) do
+    # Trapping exits is what lets terminate/2 run when the supervisor shuts the
+    # aggregator down, so the partial bucket is sent on that path too.
+    Process.flag(:trap_exit, true)
     Process.send_after(self(), :flush, @flush_interval_ms)
     {:ok, %{buckets: %{}}}
   end
@@ -123,9 +133,16 @@ defmodule DdDataStreams.Aggregator do
     {:noreply, flush_due(state, System.system_time(:millisecond) * 1_000_000)}
   end
 
+  # Exits are trapped, so a linked process dying arrives as a message instead of
+  # killing the aggregator.
+  @impl true
+  def handle_info(_message, state), do: {:noreply, state}
+
   @impl true
   def terminate(_reason, state) do
-    flush_due(state, :infinity)
+    task = Task.async(fn -> flush_due(state, :infinity) end)
+    _ = Task.yield(task, @shutdown_flush_ms) || Task.shutdown(task)
+    :ok
   end
 
   defp add_checkpoint(buckets, checkpoint) do
