@@ -583,8 +583,9 @@ header's key and value, in bytes. It includes the inbound pathway header (about
 
 The produce size is the size of `data` by default, or the `:payload_size` you
 pass to `produce/3`; `produce_batch/3` measures each payload separately. The
-pair the library returns is not part of it, so the produce size is not inflated
-by this library. The two sides of one edge therefore differ by the header.
+library adds the size of the `{key, value}` pair it returns - the configured
+header key plus the encoded value - so both sides of one edge measure the same
+message. Measure the message without that pair.
 
 ### Flushing
 
