@@ -1,6 +1,8 @@
 defmodule DdDataStreams.PayloadTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias DdDataStreams.Config
   alias DdDataStreams.Payload
   alias DdDataStreams.Sketch
@@ -299,7 +301,7 @@ defmodule DdDataStreams.PayloadTest do
         assert Config.enabled?(), "expected #{inspect(value)} to leave the library enabled"
       end
 
-      for value <- ["false", "FALSE", "0", "no", "off"] do
+      for value <- ["false", "FALSE", "0", "no", "off", " false ", "false\n", "OFF\r\n"] do
         System.put_env("DD_DATA_STREAMS_ENABLED", value)
         refute Config.enabled?(), "expected #{inspect(value)} to disable the library"
       end
@@ -315,6 +317,49 @@ defmodule DdDataStreams.PayloadTest do
         assert Config.enabled?() == enabled,
                "expected enabled: #{inspect(enabled)} to win over #{inspect(variable)}"
       end
+    after
+      Application.delete_env(:dd_data_streams, :enabled)
+    end
+
+    test "a configured string is read the way the variable is" do
+      System.put_env("DD_DATA_STREAMS_ENABLED", "true")
+
+      for value <- ["false", " FALSE ", "0", "no", "off\n", " Off "] do
+        Application.put_env(:dd_data_streams, :enabled, value)
+        refute Config.enabled?(), "expected #{inspect(value)} to disable the library"
+      end
+
+      for value <- ["true", "TRUE", "yes"] do
+        Application.put_env(:dd_data_streams, :enabled, value)
+        assert Config.enabled?(), "expected #{inspect(value)} to leave the library enabled"
+      end
+    after
+      Application.delete_env(:dd_data_streams, :enabled)
+    end
+
+    test "a nil or blank configuration lets the variable decide" do
+      for value <- [nil, "", "  "], variable <- ["false", "true"] do
+        Application.put_env(:dd_data_streams, :enabled, value)
+        System.put_env("DD_DATA_STREAMS_ENABLED", variable)
+
+        assert Config.enabled?() == (variable == "true"),
+               "expected #{inspect(value)} to leave #{inspect(variable)} to decide"
+      end
+    after
+      Application.delete_env(:dd_data_streams, :enabled)
+    end
+
+    test "an unrecognised value leaves the library on and says so once" do
+      Application.put_env(:dd_data_streams, :enabled, ["x"])
+
+      log =
+        capture_log(fn ->
+          assert Config.enabled?()
+          assert Config.enabled?()
+        end)
+
+      assert [_] =
+               Regex.scan(~r/\["x"\] is neither a boolean nor one of false, 0, no, off/, log)
     after
       Application.delete_env(:dd_data_streams, :enabled)
     end

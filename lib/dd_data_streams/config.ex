@@ -43,6 +43,8 @@ defmodule DdDataStreams.Config do
   application configuration is still read from the VM.
   """
 
+  require Logger
+
   @enabled_key :enabled
   @transport_key :transport
   @default_service "unnamed-elixir-service"
@@ -51,6 +53,8 @@ defmodule DdDataStreams.Config do
   @header_key :header
   @default_header "dd-pathway-ctx-base64"
   @default_transport DdDataStreams.Transport.Req
+  @false_words ~w(false 0 no off)
+  @warned_key {__MODULE__, :unrecognised_enabled}
 
   @doc """
   The service the pipeline reports itself as: `config :dd_data_streams, service:`
@@ -102,9 +106,14 @@ defmodule DdDataStreams.Config do
   calling `DdDataStreams.attach/0` is the opt-in.
 
   `config :dd_data_streams, enabled: true | false` decides when it holds a
-  boolean. Otherwise `DD_DATA_STREAMS_ENABLED` is read, and it is a kill switch:
-  only a value that reads as false - `false`, `0`, `no`, `off`, case-insensitive
-  - turns the library off. An unset, empty or unrecognised value leaves it on.
+  boolean. A configured string is read the way `DD_DATA_STREAMS_ENABLED` is,
+  trimmed and case-insensitive, so
+  `enabled: System.get_env("DD_DATA_STREAMS_ENABLED")` needs no conversion at
+  the call site. Otherwise `DD_DATA_STREAMS_ENABLED` is read, and it is a kill
+  switch: only a value that reads as false - `false`, `0`, `no`, `off` - turns
+  the library off. An unset, empty or unrecognised value leaves it on; an
+  unrecognised configuration is also reported once per process, since the flag
+  is read per produce and a mistake there is otherwise invisible.
 
   `DdDataStreams.Application` reads this when the application starts, so
   changing it at runtime does not start or stop the aggregator.
@@ -113,8 +122,37 @@ defmodule DdDataStreams.Config do
   def enabled? do
     case Application.get_env(:dd_data_streams, @enabled_key) do
       enabled when is_boolean(enabled) -> enabled
-      _configured_otherwise -> env_enabled?()
+      configured -> configured_enabled?(configured)
     end
+  end
+
+  # An unset, empty or blank configuration falls through to the environment, as
+  # `enabled: System.get_env(...)` does when the variable is not set. Anything
+  # else that is neither a boolean nor a recognised string keeps the library on
+  # and says so once per process: enabled?/0 is read per produce, so reporting
+  # per call would bury the log.
+  defp configured_enabled?(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> env_enabled?()
+      _trimmed -> string_enabled?(value)
+    end
+  end
+
+  defp configured_enabled?(nil), do: env_enabled?()
+
+  defp configured_enabled?(value) do
+    unless Process.get(@warned_key) == value do
+      Process.put(@warned_key, value)
+      Logger.warning(unrecognised_enabled_message(value))
+    end
+
+    true
+  end
+
+  defp unrecognised_enabled_message(value) do
+    "data streams monitoring stays enabled: configured :enabled " <>
+      "#{inspect(value)} is neither a boolean nor one of " <>
+      Enum.join(@false_words, ", ")
   end
 
   @doc """
@@ -180,9 +218,11 @@ defmodule DdDataStreams.Config do
   defp env_enabled? do
     case System.get_env("DD_DATA_STREAMS_ENABLED") do
       nil -> true
-      value -> String.downcase(value) not in ~w(false 0 no off)
+      value -> string_enabled?(value)
     end
   end
+
+  defp string_enabled?(value), do: String.downcase(String.trim(value)) not in @false_words
 
   # An unset, empty or blank variable means "not configured".
   defp configured(value) when is_binary(value) do
