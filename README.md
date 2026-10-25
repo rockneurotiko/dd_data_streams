@@ -645,6 +645,22 @@ different node rather than joining the one reported here; the pathway itself
 still connects, because the link between two nodes is the hash carried on the
 message.
 
+### Node hash
+
+The node hash is FNV-1 over the service, environment, primary tag and the
+hashable edge tags. The hashable set here is the same as dd-trace-java 1.67.1's
+(`bus`, `direction`, `exchange`, `topic`, `type`, `subscription`,
+`kafka_cluster_id`), but the tags are sorted rather than written in Java's
+fixed order. dd-trace-go v2.11.2 hashes a different set (it includes `group`,
+`event_type` and `segment_name` and omits `bus` and `subscription`) and adds
+process tags and an optional container hash by default. dd-trace-py 3.17.0
+hashes every tag, including per-message ones such as `partition`. None of the
+four agree for an arbitrary set of tags, and Go and Java add runtime-specific
+process tags, so numeric equality between tracers is not attainable; the
+library does not try. The tags that are not hashed are still reported on the
+edge, and those that split a node's statistics do so without changing its
+identity.
+
 ## Limitations
 
 * A message is named by the first extractor that recognises its metadata, and a

@@ -163,4 +163,15 @@ defmodule DdDataStreams.PathwayTest do
     assert checkpoint.pathway_latency == 0
     assert checkpoint.edge_latency == 0
   end
+
+  # The node hash this library computes is deliberately its own: it hashes the
+  # same tag set as dd-trace-java 1.67.1 but sorts the tags, where Java fixes
+  # their order, and it neither hashes process tags nor a container hash the way
+  # dd-trace-go v2.11.2 does, nor every tag the way dd-trace-py 3.17.0 does.
+  # The pathway itself still connects across those tracers, because the link
+  # between two nodes is the hash carried on the message, not a recomputed one.
+  test "a tag outside the hashable set does not change the node hash" do
+    assert Pathway.node_hash("checkout", "prod", nil, @consume_tags) ==
+             Pathway.node_hash("checkout", "prod", nil, @consume_tags ++ ["partition:0"])
+  end
 end
