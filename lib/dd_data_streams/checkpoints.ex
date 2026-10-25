@@ -31,9 +31,10 @@ defmodule DdDataStreams.Checkpoints do
   `message.metadata.attributes` and `message.metadata.orderingKey`, and the
   shape `BroadwayKafka` messages take once their `message.metadata.headers` list
   is passed as `:headers`. Extra keys are left alone. A message that carries
-  headers is read through them, and a header that is not a pair is measured as
-  empty. Otherwise an attributes value that is neither a map nor a list is read
-  as an empty attributes map, and a list of attributes is read as header pairs.
+  headers is read through them, and a header this library cannot read is
+  measured as empty. Otherwise an attributes value that is neither a map nor a
+  list is read as an empty attributes map, and a list of attributes is read as
+  header pairs.
 
   `produce/3` takes no message: the caller measures the outgoing payload, or
   lets `DdDataStreams.produce/3` measure its `data`.
@@ -173,10 +174,12 @@ defmodule DdDataStreams.Checkpoints do
     end)
   end
 
-  # A header the broker exposes as a three-element tuple carries a value this
-  # library does not understand, so it is measured as empty rather than
-  # crashing the pipeline.
-  defp entry_size({key, value}), do: bytes(key) + bytes(value)
+  # A broker may carry other fields alongside the key and the value; every
+  # element of the entry counts towards the payload.
+  defp entry_size(entry) when tuple_size(entry) >= 2 do
+    entry |> Tuple.to_list() |> Enum.reduce(0, fn element, size -> size + bytes(element) end)
+  end
+
   defp entry_size(_entry), do: 0
 
   # Attributes reach this library from a broker, so a value that is not a

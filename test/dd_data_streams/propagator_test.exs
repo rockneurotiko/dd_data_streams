@@ -4,6 +4,8 @@ defmodule DdDataStreams.PropagatorTest do
   alias DdDataStreams.Pathway
   alias DdDataStreams.Propagator
 
+  @key "dd-pathway-ctx-base64"
+
   @headers Path.expand("../fixtures/propagation/headers.txt", __DIR__)
            |> File.read!()
            |> Code.eval_string()
@@ -167,6 +169,47 @@ defmodule DdDataStreams.PropagatorTest do
 
     assert [{"x-pathway", _value}, {"traceparent", "00-abc"}] =
              Propagator.put(headers, pathway, "x-pathway")
+  end
+
+  test "get/2 reads a header list entry of any arity above one" do
+    pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+    encoded = "6gAAAAAAAACAoKv++WKA2uKB+mI="
+
+    for headers <- [
+          [{@key, encoded}],
+          [{@key, :longstr, encoded}],
+          [{@key, :longstr, :extra, encoded}],
+          [{"traceparent", "00-abc"}, {@key, :longstr, encoded}]
+        ] do
+      assert Propagator.get(headers) == pathway,
+             "could not read the pathway out of #{inspect(headers)}"
+    end
+  end
+
+  test "get/2 returns nil for a carrier no entry can be read from, without raising" do
+    assert Propagator.get(["dd-pathway-ctx-base64"], @key) == nil
+    assert Propagator.get([{"dd-pathway-ctx-base64"}], @key) == nil
+    assert Propagator.get([{"traceparent", "00-abc"}], @key) == nil
+    assert Propagator.get([{@key, :longstr, nil}], @key) == nil
+    assert Propagator.get([@key | "tail"], @key) == nil
+    assert Propagator.get("dd-pathway-ctx-base64", @key) == nil
+  end
+
+  test "an entry before an improper tail is still read" do
+    pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+
+    assert Propagator.get([{@key, "6gAAAAAAAACAoKv++WKA2uKB+mI="} | "tail"], @key) == pathway
+  end
+
+  test "put/3 rewrites the last element of the first matching entry and drops later ones" do
+    pathway = %Pathway{hash: 1}
+    encoded = Propagator.encode_str(pathway)
+    headers = [{"traceparent", "00-abc"}, {@key, :longstr, "stale"}, {@key, "staler"}]
+
+    assert [{"traceparent", "00-abc"}, {@key, :longstr, ^encoded}] =
+             Propagator.put(headers, pathway, @key)
+
+    assert [{@key, ^encoded}] = Propagator.put([{@key, "stale"}], pathway, @key)
   end
 
   test "put/2 injects the header and keeps the other attributes" do

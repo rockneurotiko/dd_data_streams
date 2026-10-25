@@ -26,31 +26,39 @@ defmodule DdDataStreams.Propagator do
   # seven bits plus a final byte carrying the remaining eight.
   @max_varint_bytes 8
 
+  # An entry is a tuple of any arity above one whose first element is the key,
+  # whatever else the broker puts in it: its value is the last element.
+  defguardp entry(candidate, key)
+            when is_tuple(candidate) and tuple_size(candidate) >= 2 and elem(candidate, 0) == key
+
   @doc """
   Puts the pathway into a message's headers under `key`, which defaults to
   `#{@default_header}`.
 
-  The headers are either an attribute map or a list of `{key, value}` pairs, as
-  `BroadwayKafka` exposes them; an existing entry under the same key is
-  replaced in both. A pathway that has not been checkpointed (hash zero) carries
+  The headers are either an attribute map or a list of tuples whose first
+  element is the header key, as `BroadwayKafka` exposes them; an existing entry
+  under the same key is replaced in both, keeping whatever other elements that
+  entry carries. A pathway that has not been checkpointed (hash zero) carries
   no information and is not written. The headers are returned unchanged so a
   produce path can call this unconditionally.
   """
-  @spec put(map() | [{binary(), binary()}], Pathway.t()) :: map() | [{binary(), binary()}]
-  @spec put(map() | [{binary(), binary()}], Pathway.t(), String.t()) ::
-          map() | [{binary(), binary()}]
+  @spec put(map() | [tuple()], Pathway.t()) :: map() | [tuple()]
+  @spec put(map() | [tuple()], Pathway.t(), String.t()) :: map() | [tuple()]
   def put(attributes, pathway), do: put(attributes, pathway, @default_header)
 
   def put(attributes, %Pathway{hash: 0}, _key), do: attributes
 
   def put(attributes, %Pathway{} = pathway, key) when is_list(attributes) do
-    [
-      {key, encode_str(pathway)}
-      | Enum.reject(attributes, fn
-          {existing, _value} -> existing == key
-          _other -> false
-        end)
-    ]
+    value = encode_str(pathway)
+
+    case Enum.split_while(attributes, &(not entry(&1, key))) do
+      {_before, []} ->
+        [{key, value} | attributes]
+
+      {before, [entry | rest]} ->
+        before ++
+          [put_elem(entry, tuple_size(entry) - 1, value) | Enum.reject(rest, &entry(&1, key))]
+    end
   end
 
   def put(attributes, %Pathway{} = pathway, key) do
@@ -61,10 +69,10 @@ defmodule DdDataStreams.Propagator do
   Reads the pathway out of a message's headers under `key`, which defaults to
   `#{@default_header}`.
 
-  The headers are an attribute map or a list of `{key, value}` pairs. Returns
-  `nil` when the header is absent, is not a valid base64 header, does not
-  contain a hash and two timestamps, or is an entry of a header list that is
-  not a pair.
+  The headers are an attribute map or a list of tuples whose first element is
+  the header key and whose value is its last element. Returns `nil` when the
+  header is absent, is not a valid base64 header, does not contain a hash and
+  two timestamps, or is carried in a shape no entry can be read from.
   """
   @spec get(map() | [tuple()] | nil) :: Pathway.t() | nil
   @spec get(map() | [tuple()] | nil, String.t()) :: Pathway.t() | nil
@@ -83,12 +91,11 @@ defmodule DdDataStreams.Propagator do
 
   def get(_attributes, _key), do: nil
 
-  # Only a two-element tuple is a header this library reads. A broker that
-  # exposes three-element header tuples carries a value the library does not
-  # understand, which is a header it cannot use rather than an error.
-  defp find([{key, value} | _rest], key), do: {:ok, value}
-  defp find([_rest | rest], key), do: find(rest, key)
-  defp find([], _key), do: :error
+  defp find([entry | _rest], key) when entry(entry, key),
+    do: {:ok, elem(entry, tuple_size(entry) - 1)}
+
+  defp find([_entry | rest], key), do: find(rest, key)
+  defp find(_carrier, _key), do: :error
 
   defp decode_value(value) when is_binary(value) do
     case decode_str(value) do

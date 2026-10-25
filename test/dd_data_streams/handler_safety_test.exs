@@ -160,13 +160,13 @@ defmodule DdDataStreams.HandlerSafetyTest do
     assert length(:telemetry.list_handlers(@consume_event)) == 1
   end
 
-  test "a three-tuple header is ignored and the checkpoint is recorded" do
+  test "a three-tuple header is read from its last element and the checkpoint is recorded" do
     Application.put_env(:dd_data_streams, :extractors, [Configurable])
 
     Process.put(:extractor_result, {
       :ok,
       @tags,
-      %{attributes: [{"dd-pathway-ctx-base64", "AAAABBBB", :long}]}
+      %{attributes: [{"dd-pathway-ctx-base64", :string, "6gAAAAAAAACAoKv++WKA2uKB+mI="}]}
     })
 
     assert :ok = DdDataStreams.attach()
@@ -175,6 +175,7 @@ defmodule DdDataStreams.HandlerSafetyTest do
 
     assert_receive {:checkpoint, checkpoint}
     assert checkpoint.tags == @tags
+    assert checkpoint.parent_hash == 234
     assert length(:telemetry.list_handlers(@consume_event)) == 1
   end
 

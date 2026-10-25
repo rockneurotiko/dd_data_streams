@@ -2,6 +2,27 @@
 
 Elixir library for data streams over Broadway pub/sub.
 
+## Design motto: generic by default
+
+The library is generic, so anything broker-shaped lives in exactly one of two
+places: the generic core, or an adapter the host application configures.
+Per-broker branches inside the core are not an option.
+
+The pathway header rule is the pattern to copy: an entry is a tuple whose first
+element is the key and whose last element is the value, whatever arity the
+broker uses, so Kafka `{key, value}` pairs and AMQP `{key, type, value}`
+triples both follow from one rule with no broker named anywhere. Whatever
+cannot be said generically becomes a configured adapter instead of a special
+case.
+
+## Tests
+
+Start the Pub/Sub emulator in Docker on port 8085 before running the suite. The
+`emulator` and `agent` tiers are excluded from `mix test` by default, so only a
+running emulator lets them reach a real broker; use the command under `###
+emulator` in the README with project `dsm-test`, then run that tier with
+`PUBSUB_EMULATOR_HOST=127.0.0.1:8085 mix test --only emulator`.
+
 ## Agent skills
 
 ### Issue tracker
