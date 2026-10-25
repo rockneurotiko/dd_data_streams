@@ -33,3 +33,13 @@ Issues and specs are tracked with org-tracker. See
 ### Triage labels
 
 Triage labels are documented in `docs/agents/triage-labels.md`.
+
+
+## Subagents
+
+When spawning subagents for work in this repository:
+
+- Restrict all file searches and commands to this repository root (`/home/rock/Git/dd_data_streams`). Never run `find`, `grep`, `rg`, or `sed` from `/` or another project.
+- Always set an explicit timeout on shell commands; avoid unbounded or recursive searches.
+- Use targeted paths and file names; prefer `rg`/`grep` within `lib/`, `test/`, or `docs/`.
+- Do not run commands that can block indefinitely (for example `sed` over large trees) without a timeout.
