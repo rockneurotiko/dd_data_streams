@@ -629,6 +629,10 @@ Unix milliseconds, base64 encoded. Headers written by any of those tracers
 decode here, and headers written here decode there. A malformed header is
 ignored and the message starts a new pathway.
 
+For backwards compatibility, when the configured key is absent the library also
+reads a legacy binary header under `dd-pathway-ctx`, decoding its raw
+(non-base64) bytes. The configured key always wins when present.
+
 The header key is configurable with `header:` / `DD_DATA_STREAMS_HEADER`, but the
 value format is the official one; changing the key stops the official tracers
 from finding the pathway.

@@ -4,7 +4,11 @@ defmodule DdDataStreams.Propagator do
 
   The default header key is `dd-pathway-ctx-base64`, the name the official
   Datadog tracers use; `DdDataStreams.Config.header/0` is the configured key the
-  library reads and writes. The payload is the 64-bit unsigned hash in
+  library reads and writes. For backwards compatibility with older producers,
+  `get/2` also falls back to the legacy binary `dd-pathway-ctx` key, decoding
+  its raw (non-base64) bytes, when the configured key is absent.
+
+  The payload is the 64-bit unsigned hash in
   little-endian byte order followed by
   the pathway start and the edge start as zigzag-encoded varints of Unix
   milliseconds, with no separator or length prefix, and the whole thing is
@@ -21,6 +25,8 @@ defmodule DdDataStreams.Propagator do
   import Bitwise
 
   @default_header "dd-pathway-ctx-base64"
+
+  @legacy_header "dd-pathway-ctx"
 
   # A 64-bit unsigned integer takes at most nine varint bytes: eight groups of
   # seven bits plus a final byte carrying the remaining eight.
@@ -83,19 +89,33 @@ defmodule DdDataStreams.Propagator do
   header is absent, is not a valid base64 header, does not contain a hash and
   two timestamps, carries a start outside the window `decode/1` believes, or is
   carried in a shape no entry can be read from.
+
+  When `key` is absent from the carrier, a legacy binary header stored under
+  `#{@legacy_header}` is tried instead and decoded as raw bytes via `decode/1`.
+  The configured key always wins when it is present.
   """
   @spec get(map() | [tuple()] | nil) :: Pathway.t() | nil
   @spec get(map() | [tuple()] | nil, String.t()) :: Pathway.t() | nil
   def get(attributes), do: get(attributes, @default_header)
 
   def get(attributes, key) when is_map(attributes) do
-    attributes |> Map.get(key) |> decode_value()
+    if Map.has_key?(attributes, key) do
+      attributes |> Map.get(key) |> decode_value()
+    else
+      attributes |> Map.get(@legacy_header) |> decode_raw_value()
+    end
   end
 
   def get(attributes, key) when is_list(attributes) do
     case find(attributes, key) do
-      {:ok, value} -> decode_value(value)
-      :error -> nil
+      {:ok, value} ->
+        decode_value(value)
+
+      :error ->
+        case find(attributes, @legacy_header) do
+          {:ok, value} -> decode_raw_value(value)
+          :error -> nil
+        end
     end
   end
 
@@ -115,6 +135,21 @@ defmodule DdDataStreams.Propagator do
   end
 
   defp decode_value(_value), do: nil
+
+  defp decode_raw_value(value) when is_binary(value) do
+    case decode(value) do
+      {:ok, pathway} -> pathway
+      :error -> nil
+    end
+  end
+
+  defp decode_raw_value(_value), do: nil
+
+  @doc """
+  The legacy binary header key, `"#{@legacy_header}"`.
+  """
+  @spec legacy_header() :: String.t()
+  def legacy_header, do: @legacy_header
 
   @doc """
   Encodes a pathway as the raw header bytes.

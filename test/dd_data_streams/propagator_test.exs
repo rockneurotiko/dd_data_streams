@@ -259,4 +259,48 @@ defmodule DdDataStreams.PropagatorTest do
     assert Propagator.get(%{"dd-pathway-ctx-base64" => nil}) == nil
     assert Propagator.get(nil) == nil
   end
+
+  test "a legacy binary dd-pathway-ctx header decodes" do
+    pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+    raw = Propagator.encode(pathway)
+
+    assert Propagator.get(%{"dd-pathway-ctx" => raw}) == pathway
+    assert Propagator.get([{"dd-pathway-ctx", raw}]) == pathway
+    assert Propagator.get([{"dd-pathway-ctx", :binary, raw}]) == pathway
+    assert Propagator.get([{"traceparent", "00-abc"}, {"dd-pathway-ctx", :longstr, raw}]) == pathway
+  end
+
+  test "configured base64 header wins over legacy binary header" do
+    configured = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+    legacy = %Pathway{hash: 999, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+
+    attributes = %{
+      "dd-pathway-ctx-base64" => Propagator.encode_str(configured),
+      "dd-pathway-ctx" => Propagator.encode(legacy)
+    }
+
+    assert Propagator.get(attributes) == configured
+    assert Propagator.get(attributes, "dd-pathway-ctx-base64") == configured
+
+    headers = [
+      {"dd-pathway-ctx-base64", Propagator.encode_str(configured)},
+      {"dd-pathway-ctx", Propagator.encode(legacy)}
+    ]
+
+    assert Propagator.get(headers) == configured
+  end
+
+  test "malformed legacy binary header yields nil" do
+    pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+
+    assert Propagator.get(%{"dd-pathway-ctx" => <<>>}) == nil
+    assert Propagator.get(%{"dd-pathway-ctx" => "AAAA"}) == nil
+    assert Propagator.get([{"dd-pathway-ctx", "AAAA"}]) == nil
+
+    # A present configured key is not rescued by a valid legacy value.
+    assert Propagator.get(%{
+             "dd-pathway-ctx-base64" => "AAAA",
+             "dd-pathway-ctx" => Propagator.encode(pathway)
+           }) == nil
+  end
 end
