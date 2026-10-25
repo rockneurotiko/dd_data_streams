@@ -62,8 +62,9 @@ defmodule DdDataStreams.Propagator do
   `#{@default_header}`.
 
   The headers are an attribute map or a list of `{key, value}` pairs. Returns
-  `nil` when the header is absent, is not a valid base64 header, or does not
-  contain a hash and two timestamps.
+  `nil` when the header is absent, is not a valid base64 header, does not
+  contain a hash and two timestamps, or is an entry of a header list that is
+  not a pair.
   """
   @spec get(map() | [{binary(), binary()}] | nil) :: Pathway.t() | nil
   @spec get(map() | [{binary(), binary()}] | nil, String.t()) :: Pathway.t() | nil
@@ -74,13 +75,20 @@ defmodule DdDataStreams.Propagator do
   end
 
   def get(attributes, key) when is_list(attributes) do
-    case List.keyfind(attributes, key, 0) do
-      {^key, value} -> decode_value(value)
-      nil -> nil
+    case find(attributes, key) do
+      {:ok, value} -> decode_value(value)
+      :error -> nil
     end
   end
 
   def get(_attributes, _key), do: nil
+
+  # Only a two-element tuple is a header this library reads. A broker that
+  # exposes three-element header tuples carries a value the library does not
+  # understand, which is a header it cannot use rather than an error.
+  defp find([{key, value} | _rest], key), do: {:ok, value}
+  defp find([_rest | rest], key), do: find(rest, key)
+  defp find([], _key), do: :error
 
   defp decode_value(value) when is_binary(value) do
     case decode_str(value) do

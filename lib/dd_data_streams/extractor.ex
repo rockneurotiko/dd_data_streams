@@ -25,8 +25,10 @@ defmodule DdDataStreams.Extractor do
   `c:consume/1` gets the message's `metadata` and returns the consume edge tags
   together with the parts of the metadata a checkpoint measures, or `:error`
   when the metadata names no edge - the library then records nothing for that
-  message rather than inventing a node. `c:produce/1` gets the topic a message
-  is published to and returns the produce edge tags.
+  message rather than inventing a node. An extractor that raises is treated
+  like one that named no edge, and the reason is logged and reported as a
+  `[:dd_data_streams, :handler, :error]` telemetry event. `c:produce/1` gets
+  the topic a message is published to and returns the produce edge tags.
 
   Tags are `key:value` strings; only the keys in `DdDataStreams.Tags` are
   reported or hashed. A consume edge needs `direction:in` and a `type:`; a
@@ -99,7 +101,9 @@ defmodule DdDataStreams.Extractor do
   The consume edge of a message Broadway is about to deliver, from its metadata.
 
   Returns the edge tags and the metadata parts a checkpoint measures, or
-  `:error` when the metadata names no edge for this broker.
+  `:error` when the metadata names no edge for this broker. An extractor that
+  raises is treated like one that returned `:error`, and the reason is logged
+  and reported as a `[:dd_data_streams, :handler, :error]` telemetry event.
   """
   @callback consume(metadata :: map()) :: {:ok, tags(), parts()} | :error
 

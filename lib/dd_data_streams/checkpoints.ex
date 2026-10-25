@@ -30,7 +30,9 @@ defmodule DdDataStreams.Checkpoints do
   These are the values `BroadwayCloudPubSub` v2 exposes as `message.data`,
   `message.metadata.attributes` and `message.metadata.orderingKey`, and the
   shape `BroadwayKafka` messages take once their `message.metadata.headers` list
-  is passed as `:headers`. Extra keys are left alone.
+  is passed as `:headers`. Extra keys are left alone. Attributes or headers of
+  a shape the library cannot read are measured as empty rather than treated as
+  an error.
 
   `produce/3` takes no message: the caller measures the outgoing payload, or
   lets `DdDataStreams.produce/3` measure its `data`.
@@ -151,10 +153,13 @@ defmodule DdDataStreams.Checkpoints do
 
   # The carrier is whichever of the two shapes the message arrived with, so a
   # Kafka pipeline reads its header list back and a Pub/Sub pipeline its map.
-  # A message with neither is read as an attributes map.
+  # A message with neither, or with attributes of a shape the library cannot
+  # read, is read as an empty attributes map.
   @spec carrier(message()) :: {:attributes | :headers, map() | [{String.t(), String.t()}]}
   defp carrier(%{headers: headers}) when is_list(headers), do: {:headers, headers}
-  defp carrier(message), do: {:attributes, Map.get(message, :attributes) || %{}}
+  defp carrier(%{attributes: attributes}) when is_map(attributes), do: {:attributes, attributes}
+  defp carrier(%{attributes: attributes}) when is_list(attributes), do: {:attributes, attributes}
+  defp carrier(_message), do: {:attributes, %{}}
 
   @spec payload_size(message()) :: non_neg_integer()
   defp payload_size(message) do
@@ -162,10 +167,16 @@ defmodule DdDataStreams.Checkpoints do
     data_size = bytes(Map.get(message, :data))
     ordering_key_size = bytes(Map.get(message, :ordering_key))
 
-    Enum.reduce(carrier, data_size + ordering_key_size, fn {key, value}, size ->
-      size + bytes(key) + bytes(value)
+    Enum.reduce(carrier, data_size + ordering_key_size, fn entry, size ->
+      size + entry_size(entry)
     end)
   end
+
+  # A header the broker exposes as a three-element tuple carries a value this
+  # library does not understand, so it is measured as empty rather than
+  # crashing the pipeline.
+  defp entry_size({key, value}), do: bytes(key) + bytes(value)
+  defp entry_size(_entry), do: 0
 
   # Attributes reach this library from a broker, so a value that is not a
   # string is measured as zero rather than crashing the pipeline.

@@ -13,7 +13,8 @@ defmodule DdDataStreams.Tags do
 
   A tag is split at its first colon, so a value may itself contain colons. Tags
   whose key is unknown, or that have no key or no colon at all, are not edge
-  tags and are dropped from an edge.
+  tags and are dropped from an edge. A tag that is not a string is dropped as
+  well.
   """
 
   @hash_tags ~w(bus direction exchange topic type subscription kafka_cluster_id)
@@ -41,6 +42,10 @@ defmodule DdDataStreams.Tags do
       _ -> :error
     end
   end
+
+  # A tag that is not a string carries no key and no value, so it is not an
+  # edge tag.
+  def parse(_tag), do: :error
 
   @doc """
   Encodes a key and value as a tag.

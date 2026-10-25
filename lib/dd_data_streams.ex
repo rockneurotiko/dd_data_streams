@@ -68,6 +68,15 @@ defmodule DdDataStreams do
   consume checkpoint, because every message of the batch already got one at its
   own message event.
 
+  ## Messages the library cannot record
+
+  The handlers never raise. Telemetry detaches a handler that raises, for every
+  pipeline in the VM, and never reattaches it, so a single malformed message
+  would stop monitoring for the whole application. A message the library cannot
+  record is skipped instead: the pathway of the previous message is cleared, so
+  a later produce does not continue it, and the reason is logged and reported as
+  a `[:dd_data_streams, :handler, :error]` telemetry event.
+
   ## Pathways that are not a Broadway stage
 
   `consume/1` and `produce/3` are the same two checkpoints as functions, for a
@@ -81,10 +90,13 @@ defmodule DdDataStreams do
 
   alias DdDataStreams.{Aggregator, Checkpoints, Config, Context, Pathway, Propagator}
 
+  require Logger
+
   @handler_id :dd_data_streams
   @consume_event [:broadway, :processor, :message, :start]
   @fan_in_event [:broadway, :batch_processor, :start]
   @events [@consume_event, @fan_in_event]
+  @error_event [:dd_data_streams, :handler, :error]
 
   @default_extractors [DdDataStreams.Extractor.GooglePubSub]
   @extractors_key :extractors
@@ -139,8 +151,10 @@ defmodule DdDataStreams do
 
   Returns `nil` when the extractor finds no edge in the metadata - a message
   with no subscription, no topic, nothing to report it under - and records
-  nothing in that case. Otherwise returns the pathway the checkpoint reached and
-  the checkpoint itself, with its payload size, for an application that wants to
+  nothing in that case. An extractor that raises is treated the same way, and
+  the reason is logged and reported as a `[:dd_data_streams, :handler, :error]`
+  telemetry event. Otherwise returns the pathway the checkpoint reached and the
+  checkpoint itself, with its payload size, for an application that wants to
   record or forward them itself. The checkpoint has already been given to the
   aggregator, so adding it again counts the message twice.
   """
@@ -306,38 +320,75 @@ defmodule DdDataStreams do
   # extractor cannot name records nothing instead of failing.
   @spec handle_event([atom()], map(), map(), map()) :: :ok
   def handle_event(@consume_event, _measurements, metadata, _config) do
-    case consume(Map.get(metadata, :message)) do
-      # A message that records no checkpoint must not leave the pathway of the
-      # previous message behind for a later produce in this stage to continue.
-      nil -> Context.clear()
-      _recorded -> :ok
+    try do
+      case consume(Map.get(metadata, :message)) do
+        # A message that records no checkpoint must not leave the pathway of the
+        # previous message behind for a later produce in this stage to continue.
+        nil -> Context.clear()
+        _recorded -> :ok
+      end
+    rescue
+      error -> skipped(@consume_event, error, __STACKTRACE__)
+    catch
+      kind, reason -> skipped(@consume_event, {kind, reason}, __STACKTRACE__)
     end
 
     :ok
   end
 
   def handle_event(@fan_in_event, _measurements, metadata, _config) do
-    resolved =
-      metadata
-      |> Map.get(:messages)
-      |> List.wrap()
-      |> Enum.map(&checkpointed/1)
-      |> Enum.reject(&is_nil/1)
+    try do
+      resolved =
+        metadata
+        |> Map.get(:messages)
+        |> List.wrap()
+        |> Enum.map(&checkpointed/1)
+        |> Enum.reject(&is_nil/1)
 
-    pathways = for {_extractor, {pathway, _checkpoint}} <- resolved, do: pathway
+      pathways = for {_extractor, {pathway, _checkpoint}} <- resolved, do: pathway
 
-    # The batch stage is another process, so it needs the extractor the messages
-    # were consumed with for its own produce edges.
-    extractor =
-      case resolved do
-        [{extractor, _checkpointed} | _] -> extractor
-        [] -> nil
-      end
+      # The batch stage is another process, so it needs the extractor the messages
+      # were consumed with for its own produce edges.
+      extractor =
+        case resolved do
+          [{extractor, _checkpointed} | _] -> extractor
+          [] -> nil
+        end
 
-    Context.put(Pathway.merge(pathways), extractor)
+      Context.put(Pathway.merge(pathways), extractor)
+    rescue
+      error -> skipped(@fan_in_event, error, __STACKTRACE__)
+    catch
+      kind, reason -> skipped(@fan_in_event, {kind, reason}, __STACKTRACE__)
+    end
+
+    :ok
   end
 
   def handle_event(_event, _measurements, _metadata, _config), do: :ok
+
+  # A message the library cannot record is skipped, not failed: the pathway of
+  # the previous message is cleared, so a later produce in this stage does not
+  # continue it, and the reason is reported once.
+  defp skipped(event, reason, stacktrace) do
+    Context.clear()
+
+    report("skipped a Data Streams checkpoint", %{
+      event: event,
+      reason: reason,
+      stacktrace: stacktrace
+    })
+
+    :ok
+  end
+
+  defp report(message, metadata) do
+    Logger.warning("#{message}: #{inspect(metadata[:reason])}")
+
+    :telemetry.execute(@error_event, %{count: 1}, metadata)
+
+    :ok
+  end
 
   # The consume checkpoint of a message together with the extractor that named it.
   # Every configured extractor is asked in order, and the first one that
@@ -345,9 +396,15 @@ defmodule DdDataStreams do
   # batch handler can reuse this without counting a message twice.
   defp checkpointed(%{data: data, metadata: metadata}) when is_map(metadata) do
     Enum.find_value(extractors(), fn extractor ->
-      case extractor.consume(metadata) do
+      case edge(extractor, metadata) do
         {:ok, tags, parts} ->
-          checkpoint = Checkpoints.consume(Map.put(parts, :data, data), tags, received_at(parts))
+          checkpoint =
+            Checkpoints.consume(
+              Map.put(parts, :data, data),
+              Enum.filter(tags, &is_binary/1),
+              received_at(parts)
+            )
+
           {extractor, checkpoint}
 
         :error ->
@@ -357,6 +414,45 @@ defmodule DdDataStreams do
   end
 
   defp checkpointed(_message), do: nil
+
+  # An extractor is the application's own code: it may raise, and it may hand
+  # back a shape the library cannot use. Both mean this extractor names no edge
+  # for the message, and both are reported so the failure is not silent.
+  defp edge(extractor, metadata) do
+    case extractor.consume(metadata) do
+      {:ok, tags, parts} when is_list(tags) and is_map(parts) ->
+        {:ok, tags, parts}
+
+      {:ok, _tags, _parts} ->
+        report("a Data Streams extractor handed back an unusable edge", %{
+          extractor: extractor,
+          reason: :unusable_edge
+        })
+
+        :error
+
+      :error ->
+        :error
+    end
+  rescue
+    error ->
+      report("a Data Streams extractor failed", %{
+        extractor: extractor,
+        reason: error,
+        stacktrace: __STACKTRACE__
+      })
+
+      :error
+  catch
+    kind, reason ->
+      report("a Data Streams extractor failed", %{
+        extractor: extractor,
+        reason: {kind, reason},
+        stacktrace: __STACKTRACE__
+      })
+
+      :error
+  end
 
   defp received_at(parts) do
     case Map.get(parts, :received_at) do
