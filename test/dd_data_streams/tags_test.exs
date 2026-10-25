@@ -1,6 +1,8 @@
 defmodule DdDataStreams.TagsTest do
   use ExUnit.Case, async: true
 
+  alias DdDataStreams.Pathway
+  alias DdDataStreams.Payload
   alias DdDataStreams.Tags
 
   doctest DdDataStreams.Tags
@@ -56,30 +58,34 @@ defmodule DdDataStreams.TagsTest do
     assert Tags.filter(tags, :aggregation) == ["group:workers", "ds.name:orders"]
   end
 
-  test "filter/2 :edge keeps the identifying, aggregation and per-message tags" do
-    tags = [
-      "direction:in",
-      "subscription:orders-sub",
-      "partition:0",
-      "group:workers",
-      "has_routing_key:true",
-      "ds.name:orders"
-    ]
-
-    assert Tags.filter(tags, :edge) == [
-             "direction:in",
-             "subscription:orders-sub",
-             "partition:0",
-             "group:workers",
-             "has_routing_key:true",
-             "ds.name:orders"
-           ]
-  end
-
-  test "unknown and malformed tags are dropped, duplicates are kept" do
+  test "unknown and malformed tags belong to no tier, duplicates are kept" do
     tags = ["type:google-pubsub", "orders", ":", "unknown:value", "type:google-pubsub"]
 
     assert Tags.filter(tags, :hash) == ["type:google-pubsub", "type:google-pubsub"]
-    assert Tags.filter(tags, :edge) == ["type:google-pubsub", "type:google-pubsub"]
+    assert Tags.filter(tags, :aggregation) == []
+  end
+
+  test "an unknown tag is reported on the edge and neither hashed nor aggregated" do
+    tags = ["direction:in", "type:google-pubsub", "unknown:value"]
+
+    {_pathway, checkpoint} =
+      Pathway.set_checkpoint(Pathway.new(%{}), tags, service: "checkout", env: "prod")
+
+    {_known_pathway, known_checkpoint} =
+      Pathway.set_checkpoint(Pathway.new(%{}), List.delete(tags, "unknown:value"),
+        service: "checkout",
+        env: "prod"
+      )
+
+    assert checkpoint.tags == tags
+    assert checkpoint.hash == known_checkpoint.hash
+
+    body =
+      Payload.new()
+      |> Payload.add_bucket(%{stats: [%{edge_tags: checkpoint.tags, hash: checkpoint.hash}]})
+      |> Payload.encode()
+      |> IO.iodata_to_binary()
+
+    assert body =~ "unknown:value"
   end
 end

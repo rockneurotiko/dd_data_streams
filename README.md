@@ -549,13 +549,17 @@ is used verbatim, so a short name and a
 hashed into every node, so it has to be the same for every service in a pipeline,
 and every edge of one bus is reported by one extractor.
 
-Only tags in the vocabulary of `DdDataStreams.Tags` are reported:
+Every tag from the extractor is reported. What the vocabulary of
+`DdDataStreams.Tags` decides is what else each key does:
 
 * hashed, identifying a node: `bus`, `direction`, `exchange`, `topic`, `type`,
   `subscription`, `kafka_cluster_id`
 * aggregation, splitting a node's statistics without changing its identity:
   `ds.name`, `ds.namespace`, `manual_checkpoint`, `group`, `consumer_group`
 * per-message values, reported but never hashed: `partition`, `has_routing_key`
+
+Any other key is reported as it is: it hashes into no node and splits no
+statistics.
 
 A produce measured for one topic is one node even when the messages are spread
 over partitions, which is what lets downstream produce edges join up.

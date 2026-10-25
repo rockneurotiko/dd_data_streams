@@ -30,8 +30,9 @@ defmodule DdDataStreams.Extractor do
   `[:dd_data_streams, :handler, :error]` telemetry event. `c:produce/1` gets
   the topic a message is published to and returns the produce edge tags.
 
-  Tags are `key:value` strings; only the keys in `DdDataStreams.Tags` are
-  reported or hashed. A consume edge needs `direction:in` and a `type:`; a
+  Tags are `key:value` strings. A key `DdDataStreams.Tags` knows is hashed into
+  the node or splits its statistics; one it does not know is reported on the
+  edge and does neither. A consume edge needs `direction:in` and a `type:`; a
   produce edge `direction:out`, the topic and the same `type:`. The `type:` is
   the queueing technology Datadog files the stream under (`google-pubsub`,
   `kafka`, `sqs`, ...) and it is part of every node's identity, so it has to be
@@ -75,8 +76,8 @@ defmodule DdDataStreams.Extractor do
   @typedoc """
   Fully built edge tags, direction included.
 
-  Only the keys in `DdDataStreams.Tags` are kept, so a tag this vocabulary does
-  not know is dropped rather than reported.
+  A tag whose key `DdDataStreams.Tags` does not know is reported like any other:
+  it takes part in no node's hash and splits no node's statistics.
   """
   @type tags :: [String.t()]
 

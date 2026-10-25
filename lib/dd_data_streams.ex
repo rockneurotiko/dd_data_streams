@@ -290,10 +290,11 @@ defmodule DdDataStreams do
 
   `pathway` is the pathway to continue - `DdDataStreams.Context.get/0` for the
   one the current stage consumed - and `tags` are the edge tags reported for
-  this stage, such as `["direction:in", "type:my-queue"]`. Only the tag keys in
-  `DdDataStreams.Tags` are reported or hashed, so an application-specific
-  `group:` or `manual_checkpoint:true` tag is a way to split one node's
-  statistics without splitting its identity.
+  this stage, such as `["direction:in", "type:my-queue"]`. `DdDataStreams.Tags`
+  decides what each key does with them: some are hashed into the node, and
+  others, such as `group:` or `manual_checkpoint:true`, split one node's
+  statistics without splitting its identity. A key the vocabulary does not know
+  is reported on the edge and does neither.
 
   The checkpoint is stamped with the current time, has no payload size, and is
   given to the aggregator. The caller's context is left alone: this is a

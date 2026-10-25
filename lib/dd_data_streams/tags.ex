@@ -11,17 +11,17 @@ defmodule DdDataStreams.Tags do
     * values - `partition`, `has_routing_key` describe one message and are
       reported, never hashed
 
-  A tag is split at its first colon, so a value may itself contain colons. Tags
-  whose key is unknown, or that have no key or no colon at all, are not edge
-  tags and are dropped from an edge. A tag that is not a string is dropped as
-  well.
+  A tag is split at its first colon, so a value may itself contain colons. A
+  key outside all three tiers is not a reason to drop a tag: it is reported on
+  the edge like any other, it takes part in no node's hash and it splits no
+  node's statistics. Only `filter/2` is selective, and only about the `:hash`
+  and `:aggregation` tiers.
   """
 
   @hash_tags ~w(bus direction exchange topic type subscription kafka_cluster_id)
   @aggregation_tags ~w(ds.name ds.namespace manual_checkpoint group consumer_group)
-  @value_tags ~w(partition has_routing_key)
 
-  @type tier :: :edge | :hash | :aggregation
+  @type tier :: :hash | :aggregation
 
   @doc """
   Splits an encoded tag into its key and value.
@@ -43,8 +43,7 @@ defmodule DdDataStreams.Tags do
     end
   end
 
-  # A tag that is not a string carries no key and no value, so it is not an
-  # edge tag.
+  # A tag that is not a string carries no key and no value.
   def parse(_tag), do: :error
 
   @doc """
@@ -60,30 +59,20 @@ defmodule DdDataStreams.Tags do
   Keeps the tags that belong to a tier, preserving their order.
 
   `:hash` keeps only the tags that identify a node. `:aggregation` keeps the
-  tags that split a node's statistics without changing its identity. `:edge`
-  keeps every known tag: the identifying ones, the aggregation ones that split
-  a node's statistics, and the per-message values such as `partition` that are
-  reported but not hashed.
+  tags that split a node's statistics without changing its identity. Neither
+  tier keeps a tag whose key is unknown, nor one that has no key at all; such a
+  tag is still reported, it simply does not belong to either tier.
 
       iex> tags = ["direction:in", "subscription:orders-sub", "partition:0", "group:workers"]
       iex> DdDataStreams.Tags.filter(tags, :hash)
       ["direction:in", "subscription:orders-sub"]
       iex> DdDataStreams.Tags.filter(tags, :aggregation)
       ["group:workers"]
-      iex> DdDataStreams.Tags.filter(tags, :edge)
-      ["direction:in", "subscription:orders-sub", "partition:0", "group:workers"]
   """
   @spec filter([String.t()], tier()) :: [String.t()]
   def filter(tags, :hash), do: Enum.filter(tags, &(key(&1) in @hash_tags))
 
   def filter(tags, :aggregation), do: Enum.filter(tags, &(key(&1) in @aggregation_tags))
-
-  def filter(tags, :edge) do
-    Enum.filter(
-      tags,
-      &(key(&1) in @hash_tags or key(&1) in @aggregation_tags or key(&1) in @value_tags)
-    )
-  end
 
   defp key(tag) do
     case parse(tag) do
