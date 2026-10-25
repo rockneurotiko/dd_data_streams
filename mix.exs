@@ -41,6 +41,9 @@ defmodule DdDataStreams.MixProject do
       # The default agent transport talks HTTP through Req. It is optional so an
       # application that passes its own transport does not pull in an HTTP client.
       {:req, "~> 0.5", optional: true},
+      # The Broadway integration is telemetry only, so a real pipeline is a test
+      # dependency and never shipped.
+      {:broadway, "~> 1.0", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:mimic, "~> 1.7", only: :test}
