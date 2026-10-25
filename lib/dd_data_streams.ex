@@ -359,7 +359,9 @@ defmodule DdDataStreams do
 
       # Sample one consumed message's pathway and extractor together, so a
       # mixed-broker batch cannot pair one broker's pathway with another's
-      # extractor.
+      # extractor. Fan-in re-derives consume checkpoints from the batch
+      # messages' metadata, so a handle_message/3 that replaces metadata
+      # entirely leaves the batch parentless (documented as unsupported).
       {pathway, extractor} =
         case resolved do
           [] ->

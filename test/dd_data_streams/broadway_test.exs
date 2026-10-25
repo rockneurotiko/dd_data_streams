@@ -502,6 +502,23 @@ defmodule DdDataStreams.BroadwayTest do
     assert Enum.any?(extractor.produce("orders-out"), &(&1 == "type:" <> expected_type))
   end
 
+  test "replacing a message's metadata leaves fan-in parentless" do
+    assert :ok = DdDataStreams.attach()
+
+    messages = [pubsub_message(nil), pubsub_message(nil)]
+    Enum.each(messages, &consume_event/1)
+    for _ <- messages, do: assert_receive({:checkpoint, _consume})
+
+    # A handle_message/3 that replaces message.metadata drops the inbound
+    # carrier, so fan-in cannot re-derive the consume checkpoint.
+    mutated = Enum.map(messages, fn message -> %{message | metadata: %{foo: "bar"}} end)
+    batch_event(mutated)
+
+    assert Context.get() == %Pathway{}
+    assert Context.get_extractor() == nil
+    refute_receive {:checkpoint, _}
+  end
+
   test "a produce with no consuming stage needs one extractor to be configured" do
     assert :ok = DdDataStreams.attach()
 

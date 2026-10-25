@@ -364,6 +364,13 @@ configured. A client that takes a header list uses the same pair:
 MyApp.Kafka.produce("orders-out", data, headers: [{key, value}])
 ```
 
+Fan-in re-derives each message's consume checkpoint from the batch
+messages' metadata, so a `handle_message/3` that returns the message unchanged
+keeps the batch linked. Replacing `message.metadata` entirely (for example by
+building a new `%Broadway.Message{}`) drops the inbound carrier: the batch then
+fans in without a parent pathway and the produce edge starts a new one. Preserve
+the metadata, or at least carry its inbound pathway, when transforming a message.
+
 In `handle_batch/4`, the context holds one pathway sampled from the batch.
 `produce_batch/3` records one checkpoint per payload and returns one pair for
 the whole batch, so one send can answer the whole batch:
