@@ -3,8 +3,8 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   # REST API, so the broker side of the integration is exercised against a real
   # Pub/Sub server rather than a function. The message that comes back out of
   # the emulator is handed to the library in the shape BroadwayCloudPubSub v2
-  # produces, and the reply goes back onto the broker through the library's own
-  # publish path.
+  # produces, and the reply is published with the pair the library's produce
+  # checkpoint returns.
   #
   # The emulator is not part of the default suite: this is the `emulator` tier,
   # excluded from `mix test` and run with
@@ -82,12 +82,13 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   end
 
   setup do
-    variables = ~w(DD_SERVICE DD_ENV DD_DATA_STREAMS_ENABLED)
+    variables = ~w(DD_SERVICE DD_ENV DD_DATA_STREAMS_ENABLED DD_DATA_STREAMS_HEADER)
     previous = Map.new(variables, &{&1, System.get_env(&1)})
 
     System.put_env("DD_SERVICE", @service)
     System.put_env("DD_ENV", @env)
     System.put_env("DD_DATA_STREAMS_ENABLED", "true")
+    System.delete_env("DD_DATA_STREAMS_HEADER")
 
     suffix = System.unique_integer([:positive])
 
@@ -183,21 +184,16 @@ defmodule DdDataStreams.PubSubEmulatorTest do
 
     produce_tags = ["direction:out", "topic:#{names.out_topic}", "type:google-pubsub"]
 
-    assert [out_message_id] =
-             DdDataStreams.publish(
-               names.out_topic,
-               %{data: "reply:" <> data, attributes: %{}, ordering_key: nil},
-               fn outgoing ->
-                 publish(names.out_topic, outgoing.data, outgoing.attributes)
-               end
-             )
+    reply_data = "reply:" <> data
+    {key, value} = DdDataStreams.produce(names.out_topic, reply_data)
+    assert [out_message_id] = publish(names.out_topic, reply_data, %{key => value})
 
     assert is_binary(out_message_id)
     assert acknowledge(names.in_subscription, [ack_id]) == 200
 
     # The injected attribute survives the broker and continues the consumed node.
     assert [%{"message" => reply}] = pull(names.out_subscription)
-    assert encoded = reply["attributes"]["dd-pathway-ctx-base64"]
+    assert encoded = reply["attributes"][key]
     assert {:ok, decoded} = Propagator.decode_str(encoded)
 
     assert decoded.hash ==

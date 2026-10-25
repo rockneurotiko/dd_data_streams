@@ -19,9 +19,10 @@ defmodule DdDataStreams.Config do
   That the value is read late does not mean every use of it changes at runtime;
   some are decided once per process:
 
-    * `service/0`, `env/0`, `version/0`, `primary_tag/0` and `enabled?/0` are
-      read per call, so `DdDataStreams.attach/0`, `DdDataStreams.publish/3` and
-      `DdDataStreams.checkpoint/2` follow them. The aggregator is started by
+    * `service/0`, `env/0`, `version/0`, `primary_tag/0`, `header/0` and
+      `enabled?/0` are read per call, so `DdDataStreams.attach/0`,
+      `DdDataStreams.produce/3` and `DdDataStreams.checkpoint/2` follow them.
+      The aggregator is started by
       `DdDataStreams.Application` from `enabled?/0` when the application starts
       and keeps that answer: turning the flag on afterwards installs handlers
       that record checkpoints into an aggregator that is not running, and
@@ -47,6 +48,8 @@ defmodule DdDataStreams.Config do
   @default_service "unnamed-elixir-service"
   @default_agent_url "http://localhost:8126"
   @default_agent_port "8126"
+  @header_key :header
+  @default_header "dd-pathway-ctx-base64"
   @default_transport DdDataStreams.Transport.Req
 
   @doc """
@@ -78,6 +81,21 @@ defmodule DdDataStreams.Config do
   """
   @spec primary_tag() :: String.t()
   def primary_tag, do: setting(:primary_tag, System.get_env("DD_PRIMARY_TAG")) || ""
+
+  @doc """
+  The attribute or header key the pathway is written under: `config
+  :dd_data_streams, header:` when set, `DD_DATA_STREAMS_HEADER` otherwise.
+
+  Defaults to `"#{@default_header}"`. `DdDataStreams.produce/3` returns this key
+  and the consume checkpoint reads it, so both sides of an edge must use the same
+  value. Changing it also stops interoperability with the official Datadog
+  tracers, which use the default.
+
+  Read per produce and consume call, so a runtime change applies to the next one.
+  """
+  @spec header() :: String.t()
+  def header,
+    do: setting(@header_key, System.get_env("DD_DATA_STREAMS_HEADER")) || @default_header
 
   @doc """
   Whether the library is enabled. On by default: depending on the library and

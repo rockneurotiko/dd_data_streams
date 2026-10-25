@@ -32,9 +32,22 @@ defmodule DdDataStreams do
 
       # in handle_message/3 or handle_batch/4:
       def handle_message(_processor, message, _context) do
-        DdDataStreams.publish("orders-out", %{data: outgoing_data}, &MyApp.Publisher.publish/1)
+        data = encode(message.data)
+
+        attributes =
+          case DdDataStreams.produce("orders-out", data) do
+            {key, value} -> %{key => value}
+            nil -> %{}
+          end
+
+        MyApp.Publisher.publish("orders-out", data, attributes: attributes)
         message
       end
+
+  `produce/3` records the produce checkpoint and returns the key/value pair to
+  put on the outgoing message; it does not publish. `produce_batch/3` does the
+  same for several payloads published to one topic and returns one pair for the
+  whole batch.
 
   `attach/0` installs two telemetry handlers:
 
@@ -57,7 +70,7 @@ defmodule DdDataStreams do
 
   ## Pathways that are not a Broadway stage
 
-  `consume/1` and `publish/3` are the same two checkpoints as functions, for a
+  `consume/1` and `produce/3` are the same two checkpoints as functions, for a
   pipeline that drives the library itself, and `checkpoint/2` records one for a
   stage that is neither a consume nor a produce.
 
@@ -66,7 +79,7 @@ defmodule DdDataStreams do
   the call site while the library is disabled.
   """
 
-  alias DdDataStreams.{Aggregator, Checkpoints, Config, Context, Pathway}
+  alias DdDataStreams.{Aggregator, Checkpoints, Config, Context, Pathway, Propagator}
 
   @handler_id :dd_data_streams
   @consume_event [:broadway, :processor, :message, :start]
@@ -75,6 +88,15 @@ defmodule DdDataStreams do
 
   @default_extractors [DdDataStreams.Extractor.GooglePubSub]
   @extractors_key :extractors
+
+  @typedoc """
+  The metadata key and base64 pathway value to add to an outgoing message, as
+  returned by `produce/3` and `produce_batch/3`.
+
+  The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
+  configured; the value is the encoded pathway.
+  """
+  @type propagation :: {String.t(), String.t()}
 
   @doc """
   Installs the Broadway telemetry handlers that record consume checkpoints and
@@ -139,23 +161,35 @@ defmodule DdDataStreams do
   def consume(_message), do: nil
 
   @doc """
-  Records the produce checkpoint of a message published to `topic`, injects the
-  resulting pathway into the message's attributes or headers, and calls
-  `publish_fun` with that message.
+  Records the produce checkpoint for `data` published to `topic` and returns the
+  `{key, value}` pair to add to the outgoing message's attributes or headers.
 
-  The pathway continued is the one in `DdDataStreams.Context`, so this is meant
-  to be called from the stage that consumed the message being answered: inside
-  `handle_message/3` it chains the produce onto that message's consume
-  checkpoint, inside `handle_batch/4` onto the batch's fan-in pathway. With no
-  context the produce starts a new pathway.
+  It does not publish. The caller adds the pair to the same metadata the
+  receiver will read:
 
-  `message` is a map with `:data` and the attributes the producer takes, either
-  a `:attributes` map or a list of `{key, value}` `:headers`; the pathway is
-  written back into the same carrier. `publish_fun` receives that map with
-  `dd-pathway-ctx-base64` set and publishes it; its return value is returned
-  here. Publishing several messages that answer one consumed message means
-  calling this once per message, not chaining one call's result into the next,
-  so all of them share one produce node.
+      case DdDataStreams.produce("orders-out", data) do
+        {key, value} -> MyApp.PubSub.publish("orders-out", data, attributes: %{key => value})
+        nil -> MyApp.PubSub.publish("orders-out", data)
+      end
+
+  The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
+  configured. The pathway continued is the one in `DdDataStreams.Context`, so
+  this is meant to be called from the stage that consumed the message being
+  answered: inside `handle_message/3` it chains the produce onto that message's
+  consume checkpoint, inside `handle_batch/4` onto the batch's fan-in pathway.
+  With no context the produce starts a new pathway. This function does not
+  change the context.
+
+  `data` is the outgoing payload. It is only measured, never inspected: a binary
+  is measured with `byte_size/1`, and anything else counts as zero. Pass
+  `payload_size:` when the payload's size is known another way, or when the
+  message's own attributes should be counted.
+
+  Call it immediately before sending: the checkpoint is recorded when this
+  function runs, so a send that never happens still reports a produce.
+  Producing several messages from one consumed message means calling this once
+  per message, not chaining one call's result into the next, so all of them
+  share one produce node.
 
   The edge tags come from the extractor that named the consume edge of the
   message being answered, which is the one `attach/0` left in the context, so a
@@ -164,26 +198,74 @@ defmodule DdDataStreams do
   Pub/Sub - names the outgoing one, because the topic alone does not say which
   bus it goes to:
 
-      DdDataStreams.publish("orders-out", message, &publish/1, extractor: MyApp.PubSubExtractor)
+      DdDataStreams.produce("orders-out", data, extractor: MyApp.PubSubExtractor)
 
-  When the library is disabled nothing is recorded and nothing is injected:
-  `publish_fun` is called with `message` as it is.
+  Options:
+
+    * `:extractor` - the extractor that names the outgoing edge. Defaults to the
+      extractor that consumed the message being answered, then to the only
+      configured one; a stage that produces without consuming and has several
+      extractors must pass it.
+    * `:payload_size` - the size in bytes to report, a non-negative integer.
+      Defaults to the size of `data`.
+
+  Returns `nil` when the library is disabled, and records nothing.
   """
-  @spec publish(String.t(), map(), (map() -> result), keyword()) :: result when result: var
-  def publish(topic, message, publish_fun, opts \\ []) when is_function(publish_fun, 1) do
+  @spec produce(String.t(), term(), keyword()) :: propagation() | nil
+  def produce(topic, data, opts \\ []) when is_binary(topic) do
     if Config.enabled?() do
-      {_pathway, checkpoint, result} =
-        Checkpoints.publish(
+      payload_size = payload_size(data, opts)
+
+      {pathway, checkpoint} =
+        Checkpoints.produce(
           produce_tags(topic, opts),
-          message,
           Context.get() || Pathway.new(%{}),
-          publish_fun
+          payload_size
         )
 
       Aggregator.add(checkpoint)
-      result
-    else
-      publish_fun.(message)
+      {Config.header(), Propagator.encode_str(pathway)}
+    end
+  end
+
+  @doc """
+  Records one produce checkpoint per payload in `datas` and returns one
+  `{key, value}` pair for the whole batch.
+
+  All the payloads are published to the same `topic`; the pair is the same for
+  every message because the batch shares one produce node. Add it to each
+  message's metadata:
+
+      attributes =
+        case DdDataStreams.produce_batch("orders-out", payloads) do
+          {key, value} -> %{key => value}
+          [] -> %{}
+          nil -> %{}
+        end
+
+      MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)
+
+  Each payload records its own checkpoint with its own size, but all of them
+  have the same hash and timestamp, so the batch is one produce edge. `datas`
+  is any `Enumerable`; it is materialised once. An empty enumerable returns
+  `[]`; a disabled library returns `nil`.
+
+  Payload size is `byte_size/1` per binary payload, or zero otherwise. There is
+  no `:payload_size` option here: call `produce/3` once per message when each
+  size needs to be measured differently.
+
+  The `:extractor` option is the same as for `produce/3`. Call it immediately
+  before the batch send, for the same reason as `produce/3`.
+  """
+  @spec produce_batch(String.t(), Enumerable.t(), keyword()) :: propagation() | [] | nil
+  def produce_batch(topic, datas, opts \\ []) when is_binary(topic) do
+    if Config.enabled?() do
+      if Keyword.has_key?(opts, :payload_size) do
+        raise ArgumentError,
+              ":payload_size is not supported by produce_batch/3; call produce/3 per message"
+      end
+
+      produce_all(topic, Enum.to_list(datas), opts)
     end
   end
 
@@ -283,6 +365,42 @@ defmodule DdDataStreams do
     end
   end
 
+  defp produce_all(_topic, [], _opts), do: []
+
+  defp produce_all(topic, datas, opts) do
+    {pathway, checkpoint} =
+      Checkpoints.produce(
+        produce_tags(topic, opts),
+        Context.get() || Pathway.new(%{}),
+        0
+      )
+
+    Enum.each(datas, fn data ->
+      Aggregator.add(%{checkpoint | payload_size: bytes(data)})
+    end)
+
+    {Config.header(), Propagator.encode_str(pathway)}
+  end
+
+  defp payload_size(data, opts) do
+    case Keyword.get(opts, :payload_size) do
+      nil ->
+        bytes(data)
+
+      size when is_integer(size) and size >= 0 ->
+        size
+
+      other ->
+        raise ArgumentError,
+              ":payload_size must be a non-negative integer, got: #{inspect(other)}"
+    end
+  end
+
+  # The producer's payload is only measured; a value that is not a binary counts
+  # as zero rather than crashing the send path.
+  defp bytes(data) when is_binary(data), do: byte_size(data)
+  defp bytes(_data), do: 0
+
   defp extractors do
     Application.get_env(:dd_data_streams, @extractors_key, @default_extractors)
   end
@@ -303,7 +421,7 @@ defmodule DdDataStreams do
       configured ->
         raise ArgumentError,
               "several extractors are configured (#{inspect(configured)}): pass " <>
-                "`extractor: MyApp.Extractor` to DdDataStreams.publish/4"
+                "`extractor: MyApp.Extractor` to DdDataStreams.produce/3"
     end
   end
 

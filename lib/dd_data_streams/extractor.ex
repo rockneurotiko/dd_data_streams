@@ -67,7 +67,7 @@ defmodule DdDataStreams.Extractor do
   `c:produce/1` has no metadata to look at, so it names every edge it is asked
   about. A produce in a stage that consumed a message is named by the extractor
   that consumed it, and a stage that produces without consuming passes its
-  extractor to `DdDataStreams.publish/4`.
+  extractor to `DdDataStreams.produce/3`.
   """
 
   @typedoc """

@@ -17,7 +17,11 @@ defmodule DdDataStreams.Context do
 
       pathway = my_stage_consume_pathway
       :ok = DdDataStreams.Context.put(pathway)
-      DdDataStreams.publish(topic, message, &MyApp.Publisher.publish/1)
+
+      case DdDataStreams.produce(topic, data) do
+        {key, value} -> MyApp.Publisher.publish(topic, data, attributes: %{key => value})
+        nil -> MyApp.Publisher.publish(topic, data)
+      end
 
   The context is per stage process and is overwritten by each message, so it is
   not cleared when a message is done: until the next message arrives it holds
@@ -39,7 +43,7 @@ defmodule DdDataStreams.Context do
 
   The extractor is what a produce in this process reports the outgoing edge as,
   so it follows the pathway: a pipeline that consumes from one technology and
-  publishes to another passes its own extractor to `DdDataStreams.publish/3`
+  publishes to another passes its own extractor to `DdDataStreams.produce/3`
   instead. `nil` leaves no extractor behind.
   """
   @spec put(Pathway.t(), module() | nil) :: :ok

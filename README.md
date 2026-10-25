@@ -27,28 +27,30 @@ an application can list several to run pipelines on more than one bus at once.
 ## What's in the box
 
 * `DdDataStreams`: the entry point. `attach/0` installs the Broadway telemetry
-  handlers, `publish/3` records a produce checkpoint and injects the pathway into
-  the outgoing message, and `consume/1` and `checkpoint/2` do the same for a
-  pipeline that does not run on Broadway (`publish/4` takes the extractor to use
-  when the stage publishes to a different bus than it consumed from).
+  handlers, `produce/3` records a produce checkpoint and returns the `{key,
+  value}` pair to add to the outgoing message, `produce_batch/3` does the same
+  for a batch, and `consume/1` and `checkpoint/2` cover a pipeline that does not
+  run on Broadway (`produce/3` takes `extractor:` when the stage publishes to a
+  different bus than it consumed from).
 * `DdDataStreams.Extractor`: the behaviour that names the edge of a message from
   its metadata. Configured with `config :dd_data_streams, extractors:`.
 * `DdDataStreams.Extractor.GooglePubSub`: the extractor for
   `BroadwayCloudPubSub` v2, and the default.
-* `DdDataStreams.Checkpoints`: the consume and produce checkpoints of a message,
-  given its edge tags. It knows no broker.
+* `DdDataStreams.Checkpoints`: the consume and produce checkpoints of a
+  pathway, given edge tags. It knows no broker.
 * `DdDataStreams.Pathway`: the pathway struct and its hashing, the identity of a
   node and of an edge.
-* `DdDataStreams.Propagator`: the `dd-pathway-ctx-base64` header codec, byte
-  compatible with the official Datadog tracers, over an attribute map or a
-  header list.
+* `DdDataStreams.Propagator`: the pathway header codec (default key
+  `dd-pathway-ctx-base64`), byte compatible with the official Datadog tracers,
+  over an attribute map or a header list.
 * `DdDataStreams.Aggregator`: a GenServer that buckets checkpoints and flushes
   them to the Agent every ten seconds.
 * `DdDataStreams.Payload` and `DdDataStreams.Sketch`: the StatsPayload MsgPack
   encoder and the DDSketch distributions the intake expects.
 * `DdDataStreams.Tags`: the canonical tag vocabulary.
 * `DdDataStreams.Context`: the pathway the current process produces from.
-* `DdDataStreams.Config`: the environment variables that configure the library.
+* `DdDataStreams.Config`: the environment and application settings that
+  configure the library.
 * `DdDataStreams.Transport`: the behaviour for posting to the Agent, with a Req
   implementation as the default.
 
@@ -70,6 +72,171 @@ transport to the Agent; if you pass your own transport (see
 if you do not have it the startup logs an error telling you to configure one.
 
 The library requires Elixir 1.17 or later.
+
+## Full workflow
+
+One service publishes to a topic; a Broadway pipeline consumes from a
+subscription on that topic and publishes to another topic. The library records
+one checkpoint on each side of each edge and carries the pathway in a metadata
+key between them. It never publishes or consumes anything itself.
+
+### 1. Producer
+
+Measure the payload, ask the library for the metadata pair, and add it to the
+message your client sends. For Pub/Sub:
+
+```elixir
+defmodule MyApp.Orders do
+  def publish(order) do
+    data = Jason.encode!(order)
+
+    attributes =
+      case DdDataStreams.produce("orders", data) do
+        {key, value} -> %{key => value}
+        nil -> %{}
+      end
+
+    MyApp.PubSub.publish("orders", data, attributes: attributes)
+  end
+end
+```
+
+`produce/3` records the produce checkpoint and returns `{key, value}`; `nil`
+means the library is disabled, so there is nothing to add. The key is
+`"dd-pathway-ctx-base64"` unless configured (see
+[Configuration](#configuration)), and the value is the encoded pathway.
+
+For a batch published to one topic, use `produce_batch/3`. It records one
+checkpoint per payload and returns one pair for the whole batch:
+
+```elixir
+def publish_orders(orders) do
+  payloads = Enum.map(orders, &Jason.encode!/1)
+
+  attributes =
+    case DdDataStreams.produce_batch("orders", payloads) do
+      {key, value} -> %{key => value}
+      [] -> %{}
+      nil -> %{}
+    end
+
+  MyApp.PubSub.publish_batch("orders", payloads, attributes: attributes)
+end
+```
+
+Kafka uses the same pair as a header:
+
+```elixir
+{key, value} = DdDataStreams.produce("orders", data)
+MyApp.Kafka.produce("orders", data, headers: [{key, value}])
+```
+
+The `{key, value}` pattern assumes the library is enabled; the Pub/Sub example
+shows the `nil` branch.
+
+Call `produce/3` immediately before the send. The checkpoint is recorded when
+the function runs, so a send that never happens still reports a produce.
+
+### 2. Consumer
+
+Attach once at start up, before Broadway starts:
+
+```elixir
+def start(_type, _args) do
+  DdDataStreams.attach()
+  Supervisor.start_link([MyApp.Pipeline], strategy: :one_for_one)
+end
+```
+
+The handler records the consume checkpoint for every message, using the
+producer's pathway value when it is present. In `handle_message/3`, answer with
+`produce/3` exactly as the producer did:
+
+```elixir
+defmodule MyApp.Pipeline do
+  use Broadway
+
+  def handle_message(_processor, message, _context) do
+    data = Jason.encode!(handle(message.data))
+
+    attributes =
+      case DdDataStreams.produce("orders-out", data) do
+        {key, value} -> %{key => value}
+        nil -> %{}
+      end
+
+    MyApp.PubSub.publish("orders-out", data, attributes: attributes)
+    message
+  end
+end
+```
+
+The pathway is taken from the process context, so the produce edge continues
+the consumed one. In `handle_batch/4` the context holds one pathway sampled from
+the batch; use `produce_batch/3` when one send answers the whole batch.
+
+A pipeline that does not use Broadway can call `consume/1` itself:
+
+```elixir
+{pathway, _checkpoint} =
+  DdDataStreams.consume(%{
+    data: data,
+    metadata: %{
+      subscription: "orders-sub",
+      attributes: attributes,
+      orderingKey: nil,
+      received_at: received_at
+    }
+  })
+
+# In the same process:
+out_attributes =
+  case DdDataStreams.produce("orders-out", out_data) do
+    {key, value} -> %{key => value}
+    nil -> %{}
+  end
+
+MyApp.PubSub.publish("orders-out", out_data, attributes: out_attributes)
+```
+
+`consume/1` already leaves the pathway in the context. If the produce happens in
+another process, pass the pathway with `DdDataStreams.Context.put/1` there.
+
+### 3. What travels on the message
+
+The producer adds one entry: the key from `DdDataStreams.Config.header/0`, by
+default `dd-pathway-ctx-base64`, with a base64 value containing the node hash and
+the pathway and edge start times. Merge it into the metadata the message already
+carries; do not replace the other attributes or headers. The broker must
+preserve it on the way through.
+
+The consumer reads it automatically. A missing or malformed value is not an
+error: the message starts a new pathway, with zero latency.
+
+### 4. What Datadog shows
+
+Once the Agent receives the flushed stats (about 10 seconds, then a few minutes
+for the first UI data), Data Streams Monitoring shows:
+
+- the service and topic/subscription nodes on the Data Streams map;
+- throughput per edge;
+- `data_streams.latency` distributions (p50/p75/p95/p99) for the edge and the
+  full pathway;
+- `data_streams.payload_size` distributions.
+
+There are no APM traces or spans, and no message-level detail. A consumer-only
+deployment starts a new pathway, so its edge latency is zero.
+
+### 5. Checklist
+
+- The Agent is reachable at `DD_TRACE_AGENT_URL` (or `DD_AGENT_HOST` /
+  `DD_TRACE_AGENT_PORT`) and has an API key.
+- `DD_SERVICE` and `DD_ENV` are set (service defaults to
+  `unnamed-elixir-service`).
+- `:req` is a dependency, or a custom `DdDataStreams.Transport` is configured.
+- `DdDataStreams.attach/0` runs once before Broadway starts.
+- The producer and consumer use the same `DdDataStreams.Config.header/0` value.
+- The broker preserves the attribute or header.
 
 ## Usage
 
@@ -133,69 +300,87 @@ that changes technology names the outgoing one:
 
 ```elixir
 def handle_message(_processor, message, _context) do
-  # Consumed from Kafka, published to Pub/Sub.
-  DdDataStreams.publish("orders-out", outgoing, &MyApp.PubSub.publish/1,
-    extractor: DdDataStreams.Extractor.GooglePubSub
-  )
+  # Consumed from Kafka, publishing to Pub/Sub.
+  data = encode(message.data)
 
+  attributes =
+    case DdDataStreams.produce("orders-out", data,
+           extractor: DdDataStreams.Extractor.GooglePubSub
+         ) do
+      {key, value} -> %{key => value}
+      nil -> %{}
+    end
+
+  MyApp.PubSub.publish("orders-out", data, attributes: attributes)
   message
 end
 ```
 
 ### Producing from a Broadway pipeline
 
-In `handle_message/3`, call `DdDataStreams.publish/3` with the outgoing message
-and your own publish function. The pathway is taken from the process context
-that `attach/0` filled in for this message, and the function receives the
-message with `dd-pathway-ctx-base64` added to its attributes:
+In `handle_message/3`, call `DdDataStreams.produce/3` with the outgoing payload.
+It records the produce checkpoint and returns the `{key, value}` pair to add to
+the message; it does not publish. The pathway is taken from the process context
+that `attach/0` filled in for this message:
 
 ```elixir
 def handle_message(_processor, message, _context) do
-  DdDataStreams.publish(
-    "orders-out",
-    %{
-      data: encode(message.data),
-      attributes: %{"source" => "checkout"},
-      ordering_key: nil
-    },
-    fn outgoing ->
-      MyApp.PubSub.publish("orders-out", outgoing.data, attributes: outgoing.attributes)
-    end
-  )
+  data = encode(message.data)
 
+  attributes =
+    case DdDataStreams.produce("orders-out", data) do
+      {key, value} -> %{key => value}
+      nil -> %{}
+    end
+
+  MyApp.PubSub.publish("orders-out", data, attributes: attributes)
   message
 end
 ```
 
-The outgoing message carries its headers in `:attributes` (a map) or in
-`:headers` (a list of `{key, value}` pairs, as `BroadwayKafka` calls them); the
-pathway goes into whichever one the message already uses, so the call site hands
-back the same shape its producer takes.
-
-The publish function's return value is returned unchanged, so nothing has to be
-unwrapped:
+The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
+configured. A client that takes a header list uses the same pair:
 
 ```elixir
-:ok =
-  DdDataStreams.publish("orders-out", message, fn outgoing ->
-    MyApp.PubSub.publish(outgoing)
-  end)
+{key, value} = DdDataStreams.produce("orders-out", data)
+MyApp.Kafka.produce("orders-out", data, headers: [{key, value}])
 ```
 
-In `handle_batch/4`, the context already holds the fan-in pathway, so the same
-call works. Publishing one message per consumed message means calling
-`publish/3` once per message, not chaining one call's result into the next: all
-of them then share one produce node with the consume node as their parent.
+In `handle_batch/4`, the context holds one pathway sampled from the batch.
+`produce_batch/3` records one checkpoint per payload and returns one pair for
+the whole batch, so one send can answer the whole batch:
 
-When the library is disabled, `publish/3` injects nothing and simply calls your
-function with the message as it is, so the call site needs no guard.
+```elixir
+def handle_batch(_processor, messages, _batch_info, _context) do
+  payloads = Enum.map(messages, &encode(&1.data))
 
-Call `publish/3` from the stage process itself, not from a `Task` it spawns: the
+  attributes =
+    case DdDataStreams.produce_batch("orders-out", payloads) do
+      {key, value} -> %{key => value}
+      [] -> %{}
+      nil -> %{}
+    end
+
+  MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)
+  messages
+end
+```
+
+`produce_batch/3` returns `[]` for an empty batch; both functions return `nil`
+when the library is disabled, so the call site needs no guard beyond that.
+
+Producing one message per consumed message means calling `produce/3` once per
+message, not chaining one call's result into the next: all of them then share
+one produce node with the consume node as their parent.
+
+Call `produce/3` from the stage process itself, not from a `Task` it spawns: the
 context is kept per process, so a task sees no pathway and starts a new one.
+Call it immediately before the send: the checkpoint is recorded when the
+function runs, so a send that never happens still reports a produce.
 
 ### Without Broadway
 
-`consume/1` and `publish/3` are the same two checkpoints as functions, for a
+`consume/1` and `produce/3` are the same two checkpoints as functions, for a
 pipeline that drives the library itself. `consume/1` takes a Broadway message,
 or a map shaped like one - the body in `:data`, the producer's metadata in
 `:metadata` - so the extractor names the edge exactly as it does for Broadway:
@@ -212,15 +397,26 @@ or a map shaped like one - the body in `:data`, the producer's metadata in
     }
   })
 
-# LATER, when the message is answered:
-DdDataStreams.Context.put(pathway)
+# LATER, when the message is answered, in the same process:
+data = encode(reply)
 
-DdDataStreams.publish("orders-out", outgoing, &MyApp.PubSub.publish/1)
+attributes =
+  case DdDataStreams.produce("orders-out", data) do
+    {key, value} -> %{key => value}
+    nil -> %{}
+  end
+
+MyApp.PubSub.publish("orders-out", data, attributes: attributes)
 ```
 
-It returns `nil`, and records nothing, when the extractor finds no edge in the
-metadata. The metadata is the extractor's own contract: for the Pub/Sub
-extractor those are the values `BroadwayCloudPubSub` v2 exposes as
+`consume/1` returns `nil`, and records nothing, when the extractor finds no edge
+in the metadata. It leaves the pathway in the context of the calling process; if
+the answer is produced in another process, set it there with
+`DdDataStreams.Context.put(pathway)` and pass `extractor:` to `produce/3` when
+several extractors are configured.
+
+The metadata is the extractor's own contract: for the Pub/Sub extractor those
+are the values `BroadwayCloudPubSub` v2 exposes as
 `message.metadata.subscription`, `.attributes`, `.orderingKey` and `.received_at`
 (native time units).
 
@@ -263,6 +459,7 @@ either place.
 | `DD_ENV` | empty | The deployment environment. |
 | `DD_VERSION` | empty | The application version, reported as `Version` in the payload. |
 | `DD_PRIMARY_TAG` | empty | The primary tag, hashed into every node identity. |
+| `DD_DATA_STREAMS_HEADER` | `dd-pathway-ctx-base64` | Attribute/header key the pathway travels under; the producer and consumer must use the same value. |
 | `DD_TRACE_AGENT_URL` | unset | Agent base URL; wins over host and port when set and non-empty. |
 | `DD_AGENT_HOST` | `localhost` | Agent host, when `DD_TRACE_AGENT_URL` is unset. |
 | `DD_TRACE_AGENT_PORT` | `8126` | Agent port, when `DD_TRACE_AGENT_URL` is unset. |
@@ -283,6 +480,8 @@ config :dd_data_streams,
   env: "prod",
   version: "1.2.3",
   primary_tag: "region:eu",
+  # The attribute/header key `produce/3` returns and `consume/1` reads.
+  header: "dd-pathway-ctx-base64",
   # A port is accepted as a string or an integer.
   agent_url: "http://localhost:8126",
   agent_host: "localhost",
@@ -294,9 +493,10 @@ config :dd_data_streams,
 ```
 
 The identity (`service`, `env`, `version`, `primary_tag`) is read per
-checkpoint, the agent URL and the transport on every flush, and the extractors
-on every attach, publish and consume call, so changing any of them at runtime
-with `Application.put_env/3` or `System.put_env/2` affects the next use. When
+checkpoint, the agent URL and the transport on every flush, the header on every
+produce and consume call, and the extractors on every attach, produce and
+consume call, so changing any of them at runtime with `Application.put_env/3`
+or `System.put_env/2` affects the next use. When
 the transport key is absent, `DdDataStreams.Transport.Req` is used if Req is
 available. The one thing a runtime change cannot do is start or stop the
 aggregator; see below.
@@ -320,9 +520,9 @@ release. Two ways to set it, in this order:
 
 The flag is read in two different places, and the difference matters:
 
-* `attach/0` and `publish/3` read it on every call, so they follow a runtime
-  change: attaching after boot installs handlers, and disabling stops header
-  injection.
+* `attach/0`, `produce/3` and `produce_batch/3` read it on every call, so they
+  follow a runtime change: attaching after boot installs handlers, and disabling
+  stops producing the pair.
 * `DdDataStreams.Application` reads it once, when the application starts. The
   aggregator is only started if the library was enabled at boot; turning the
   flag on later leaves handlers recording checkpoints that the aggregator drops
@@ -361,18 +561,21 @@ A consume checkpoint is stamped with the time the message reached the pipeline
 (the metadata's receive time), not the time the processor picked it up. The
 consume edge therefore reports the time the message spent in the queue, not
 Broadway's own backlog. A produce checkpoint is stamped at the time of the
-publish call.
+produce call.
 
 A message that carried no pathway starts a new one at its consume checkpoint, so
 both latencies are zero for it.
 
 ### Payload size
 
-The reported payload size is the data, the ordering key, and every attribute's
-or header's key and value, in bytes. The produce size is measured before the
-pathway header is added, so it is not inflated by this library; a consume size
-does include the inbound header (about 49 bytes), so the two sides of one edge
-differ by that header.
+The consume size is the data, the ordering key, and every attribute's or
+header's key and value, in bytes. It includes the inbound pathway header (about
+49 bytes).
+
+The produce size is the size of `data` by default, or the `:payload_size` you
+pass to `produce/3`; `produce_batch/3` measures each payload separately. The
+pair the library returns is not part of it, so the produce size is not inflated
+by this library. The two sides of one edge therefore differ by the header.
 
 ### Flushing
 
@@ -400,12 +603,16 @@ The HTTP request is best effort and is not retried.
 
 ## Interoperability
 
-The pathway travels in the `dd-pathway-ctx-base64` header, which is the same
-format dd-trace-go, dd-trace-java and dd-trace-py use: the 64-bit FNV-1 hash of
-the node in little-endian byte order followed by two zigzag varints of Unix
-milliseconds, base64 encoded. Headers written by any of those tracers decode
-here, and headers written here decode there. A malformed header is ignored and
-the message starts a new pathway.
+The pathway travels in the `dd-pathway-ctx-base64` header by default, which is
+the same format dd-trace-go, dd-trace-java and dd-trace-py use: the 64-bit FNV-1
+hash of the node in little-endian byte order followed by two zigzag varints of
+Unix milliseconds, base64 encoded. Headers written by any of those tracers
+decode here, and headers written here decode there. A malformed header is
+ignored and the message starts a new pathway.
+
+The header key is configurable with `header:` / `DD_DATA_STREAMS_HEADER`, but the
+value format is the official one; changing the key stops the official tracers
+from finding the pathway.
 
 The Agent payload matches the `StatsPayload` shape of dd-trace-go v2.13, and the
 DDSketch bins use the same mapping, so the distributions line up with the Datadog
@@ -425,7 +632,7 @@ message.
   produce by the extractor that consumed the message being answered. A stage
   that produces without consuming, or that publishes to a different bus than it
   consumed from, says which extractor by passing `extractor:` to
-  `DdDataStreams.publish/4`.
+  `DdDataStreams.produce/3`.
 * This is Data Streams Monitoring only: no APM traces, backlogs or transactions
   are collected.
 * The Agent must be reachable over HTTP; Unix domain sockets are not supported.

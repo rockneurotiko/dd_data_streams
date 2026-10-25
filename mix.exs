@@ -13,7 +13,7 @@ defmodule DdDataStreams.MixProject do
       source_url: @source_url,
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      docs: [main: "readme", extras: ["README.md"]],
+      docs: [main: "readme", extras: ["README.md", "LICENSE"]],
       package: [
         licenses: ["Beerware"],
         links: %{"GitHub" => @source_url},

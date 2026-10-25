@@ -90,24 +90,27 @@ defmodule E2e.Pipeline do
     consume = DdDataStreams.Context.get()
     IO.puts("consume pathway from attach: #{inspect(consume)}")
 
-    DdDataStreams.publish(
-      E2e.Resources.out_topic(),
-      %{data: "reply:#{message.data}", attributes: %{}, ordering_key: nil},
-      fn outgoing ->
-        IO.puts("produce attributes: #{inspect(outgoing.attributes)}")
+    outgoing_data = "reply:#{message.data}"
 
-        E2e.Observed.put(%{
-          data: message.data,
-          inbound: inbound,
-          subscription: metadata.subscription,
-          received_at: metadata.received_at,
-          consume: consume,
-          produce: outgoing.attributes
-        })
-
-        E2e.PubSub.publish(E2e.Resources.out_topic(), outgoing)
+    attributes =
+      case DdDataStreams.produce(E2e.Resources.out_topic(), outgoing_data) do
+        {key, value} -> %{key => value}
+        nil -> %{}
       end
-    )
+
+    outgoing = %{data: outgoing_data, attributes: attributes, ordering_key: nil}
+    IO.puts("produce attributes: #{inspect(outgoing.attributes)}")
+
+    E2e.Observed.put(%{
+      data: message.data,
+      inbound: inbound,
+      subscription: metadata.subscription,
+      received_at: metadata.received_at,
+      consume: consume,
+      produce: outgoing.attributes
+    })
+
+    E2e.PubSub.publish(E2e.Resources.out_topic(), outgoing)
 
     message
   end
@@ -256,6 +259,7 @@ System.put_env("CAPTURE_DIR", Path.join(__DIR__, "capture-#{E2e.Resources.id()}"
 
 System.put_env(%{
   "DD_DATA_STREAMS_ENABLED" => "true",
+  "DD_DATA_STREAMS_HEADER" => "dd-pathway-ctx-base64",
   "DD_SERVICE" => "checkout",
   "DD_ENV" => "prod",
   "DD_TRACE_AGENT_URL" => "http://127.0.0.1:8126"

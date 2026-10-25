@@ -150,6 +150,25 @@ defmodule DdDataStreams.PropagatorTest do
     end
   end
 
+  test "put/3 and get/2 use the given key" do
+    pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+
+    attributes = Propagator.put(%{"origin" => "eu"}, pathway, "x-pathway")
+
+    assert attributes["origin"] == "eu"
+    assert attributes["x-pathway"] == "6gAAAAAAAACAoKv++WKA2uKB+mI="
+    assert Propagator.get(attributes, "x-pathway") == pathway
+    assert Propagator.get(attributes) == nil
+  end
+
+  test "put/3 replaces an existing entry under the given key in a header list" do
+    pathway = %Pathway{hash: 1}
+    headers = [{"x-pathway", "stale"}, {"traceparent", "00-abc"}]
+
+    assert [{"x-pathway", _value}, {"traceparent", "00-abc"}] =
+             Propagator.put(headers, pathway, "x-pathway")
+  end
+
   test "put/2 injects the header and keeps the other attributes" do
     pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
     attributes = Propagator.put(%{"ordering_key" => "k"}, pathway)

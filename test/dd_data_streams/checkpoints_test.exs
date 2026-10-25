@@ -2,7 +2,7 @@ defmodule DdDataStreams.CheckpointsTest do
   use ExUnit.Case, async: false
 
   alias DdDataStreams.Checkpoints
-  alias DdDataStreams.{Pathway, Propagator}
+  alias DdDataStreams.Pathway
 
   @headers Path.expand("../fixtures/propagation/headers.txt", __DIR__)
            |> File.read!()
@@ -16,12 +16,13 @@ defmodule DdDataStreams.CheckpointsTest do
   @produce_tags ["direction:out", "topic:orders", "type:google-pubsub"]
 
   setup do
-    variables = ~w(DD_SERVICE DD_ENV DD_PRIMARY_TAG)
+    variables = ~w(DD_SERVICE DD_ENV DD_PRIMARY_TAG DD_DATA_STREAMS_HEADER)
     previous = Map.new(variables, &{&1, System.get_env(&1)})
 
     System.put_env("DD_SERVICE", @service)
     System.put_env("DD_ENV", @env)
     System.delete_env("DD_PRIMARY_TAG")
+    System.delete_env("DD_DATA_STREAMS_HEADER")
 
     on_exit(fn ->
       for {name, value} <- previous do
@@ -106,30 +107,23 @@ defmodule DdDataStreams.CheckpointsTest do
     end
   end
 
-  test "publish chains the produce edge onto the consume checkpoint" do
+  test "produce chains the produce edge onto the consume checkpoint" do
     header = reference_header()
     {consumed, consume_checkpoint} = consume_reference(header)
-    message = pubsub_message(%{"origin" => "eu"})
 
-    {pathway, checkpoint, published} =
-      Checkpoints.publish(@produce_tags, message, consumed, & &1)
+    {pathway, checkpoint} = Checkpoints.produce(@produce_tags, consumed, 5)
 
     assert checkpoint.tags == @produce_tags
     assert checkpoint.parent_hash == consume_checkpoint.hash
     assert checkpoint.hash == produce_hash(consume_checkpoint.hash)
+    assert checkpoint.payload_size == 5
     assert pathway.hash == checkpoint.hash
     assert pathway.pathway_start == consumed.pathway_start
     assert pathway.edge_start == checkpoint.timestamp
-
-    assert published.data == message.data
-    assert published.ordering_key == message.ordering_key
   end
 
-  test "publish starts a fresh pathway when the caller has none" do
-    message = pubsub_message(nil)
-
-    {pathway, checkpoint, _published} =
-      Checkpoints.publish(@produce_tags, message, Pathway.new(%{}), & &1)
+  test "produce starts a fresh pathway when the caller has none" do
+    {pathway, checkpoint} = Checkpoints.produce(@produce_tags, Pathway.new(%{}), 5)
 
     assert checkpoint.parent_hash == 0
     assert checkpoint.hash == produce_hash(0)
@@ -137,87 +131,45 @@ defmodule DdDataStreams.CheckpointsTest do
     assert pathway.edge_start == checkpoint.timestamp
   end
 
-  test "publish injects a header that round-trips through this library's own decoder" do
-    # A round-trip through this library's own encoder: the overwrite and the
-    # attribute name are what the reference tracers do, but the value is not an
-    # independent wire capture.
-    message =
-      pubsub_message(%{"origin" => "eu", "dd-pathway-ctx-base64" => "stale"})
+  test "produce reports the payload size it is given" do
+    {_pathway, checkpoint} = Checkpoints.produce(@produce_tags, Pathway.new(%{}), 3)
 
-    {pathway, _checkpoint, published} =
-      Checkpoints.publish(@produce_tags, message, Pathway.new(%{}), & &1)
-
-    assert published.attributes["origin"] == "eu"
-    refute published.attributes["dd-pathway-ctx-base64"] == "stale"
-    assert Propagator.get(published.attributes) == pathway
+    assert checkpoint.payload_size == 3
   end
 
-  test "publish measures the payload before writing the pathway attribute" do
-    received_ms = 1_780_345_623_738
-
-    {consumed, _checkpoint} =
-      Checkpoints.consume(pubsub_message(nil), @consume_tags, native(received_ms))
-
-    message = pubsub_message(%{"origin" => "eu"}, data: "payload")
-    calls = :counters.new(1, [])
-
-    publish_fun = fn outgoing ->
-      :counters.add(calls, 1, 1)
-      outgoing
-    end
-
-    {_pathway, checkpoint, published} =
-      Checkpoints.publish(@produce_tags, message, consumed, publish_fun)
-
-    # data 7 + "origin"/"eu" 8 + ordering key 10; the 21-byte key and 28-byte
-    # value this call writes are not counted.
-    assert checkpoint.payload_size == 7 + 8 + 10
-    assert Map.has_key?(published.attributes, "dd-pathway-ctx-base64")
-    # The caller publishes once, not once per attribute it carries.
-    assert :counters.get(calls, 1) == 1
-  end
-
-  test "two publishes from one consumed pathway share one produce node" do
+  test "two produces from one consumed pathway share one produce node" do
     header = reference_header()
     {consumed, consume_checkpoint} = consume_reference(header)
-    message = pubsub_message(nil)
 
-    {_first_pathway, first, _} = Checkpoints.publish(@produce_tags, message, consumed, & &1)
-    {_second_pathway, second, _} = Checkpoints.publish(@produce_tags, message, consumed, & &1)
+    {_first_pathway, first} = Checkpoints.produce(@produce_tags, consumed, 5)
+    {_second_pathway, second} = Checkpoints.produce(@produce_tags, consumed, 5)
 
     assert first.parent_hash == consume_checkpoint.hash
     assert second.parent_hash == consume_checkpoint.hash
     assert first.hash == second.hash
   end
 
-  test "a message without attributes or ordering key is measured by its data" do
-    message = %{data: "abc", attributes: nil, ordering_key: nil}
+  test "consume reads the configured header key" do
+    Application.put_env(:dd_data_streams, :header, "x-pathway")
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :header) end)
 
-    {_pathway, checkpoint, published} =
-      Checkpoints.publish(@produce_tags, message, Pathway.new(%{}), & &1)
+    header = reference_header()
+    attributes = %{"x-pathway" => header.base64}
 
-    assert checkpoint.payload_size == 3
-    assert Map.keys(published.attributes) == ["dd-pathway-ctx-base64"]
+    {_pathway, checkpoint} =
+      Checkpoints.consume(
+        pubsub_message(attributes),
+        @consume_tags,
+        native(header.edge_start + 1)
+      )
+
+    assert checkpoint.parent_hash == header.hash
   end
 
-  test "a message carried in a header list is consumed and produced in that shape" do
+  test "a message carried in a header list is consumed in that shape" do
     header = reference_header()
     attributes = [{"traceparent", "00-abc"}, {"dd-pathway-ctx-base64", header.base64}]
 
-    {_pathway, checkpoint, published} =
-      Checkpoints.publish(
-        @produce_tags,
-        %{data: "hello", headers: attributes},
-        Pathway.new(%{}),
-        & &1
-      )
-
-    assert checkpoint.payload_size == 5 + byte_size("traceparent") + 6 + 21 + 28
-    assert [{"dd-pathway-ctx-base64", encoded}, {"traceparent", "00-abc"}] = published.headers
-    assert {:ok, produced} = Propagator.decode_str(encoded)
-    assert produced.hash == checkpoint.hash
-
-    # And back in: a header list is a carrier a consume checkpoint reads too.
     {consumed, inbound} =
       Checkpoints.consume(
         %{data: "hello", headers: attributes},

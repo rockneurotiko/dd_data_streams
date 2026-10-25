@@ -31,7 +31,7 @@ defmodule DdDataStreams.BroadwayTest do
 
   setup do
     variables =
-      ~w(DD_SERVICE DD_ENV DD_PRIMARY_TAG DD_DATA_STREAMS_ENABLED)
+      ~w(DD_SERVICE DD_ENV DD_PRIMARY_TAG DD_DATA_STREAMS_ENABLED DD_DATA_STREAMS_HEADER)
 
     previous = Map.new(variables, &{&1, System.get_env(&1)})
     Enum.each(variables, &System.delete_env/1)
@@ -115,7 +115,7 @@ defmodule DdDataStreams.BroadwayTest do
     assert checkpoint.payload_size == 15
   end
 
-  test "publish from handle_message chains the produce onto the consume checkpoint" do
+  test "produce from handle_message chains the produce onto the consume checkpoint" do
     header = reference_header()
     message = pubsub_message(%{"dd-pathway-ctx-base64" => header.base64})
 
@@ -124,23 +124,47 @@ defmodule DdDataStreams.BroadwayTest do
     assert_receive {:checkpoint, consumed}
 
     # What handle_message/3 does with the pathway its stage was given.
-    published =
-      DdDataStreams.publish("orders", %{data: "hello", attributes: nil, ordering_key: nil}, & &1)
+    {key, value} = DdDataStreams.produce("orders", "hello")
 
     assert_receive {:checkpoint, produced}
     refute_receive {:checkpoint, _second}
 
+    assert key == "dd-pathway-ctx-base64"
     assert produced.tags == @produce_tags
     assert produced.parent_hash == consumed.hash
     assert produced.hash == produce_hash(consumed.hash)
+    assert produced.payload_size == 5
 
-    # Decoding the injected attribute reads this library's own encoding; the
-    # hash it has to carry is the one derived above from Pathway.node_hash/4.
-    assert %Pathway{hash: hash, pathway_start: pathway_start} =
-             Propagator.get(published.attributes)
+    # Decoding the returned value reads this library's own encoding; the hash it
+    # has to carry is the one derived above from Pathway.node_hash/4.
+    assert {:ok, %Pathway{hash: hash, pathway_start: pathway_start}} =
+             Propagator.decode_str(value)
 
     assert hash == produced.hash
     assert pathway_start == header.pathway_start
+  end
+
+  test "produce reports a payload size given in the options" do
+    assert :ok = DdDataStreams.attach()
+
+    assert {_key, value} = DdDataStreams.produce("orders", "hello", payload_size: 42)
+
+    assert_receive {:checkpoint, checkpoint}
+    assert checkpoint.payload_size == 42
+    assert {:ok, _pathway} = Propagator.decode_str(value)
+  end
+
+  test "produce returns the configured header key" do
+    Application.put_env(:dd_data_streams, :header, "x-pathway")
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :header) end)
+
+    assert :ok = DdDataStreams.attach()
+
+    assert {"x-pathway", value} = DdDataStreams.produce("orders", "hello")
+    assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
+
+    assert_receive {:checkpoint, checkpoint}
+    assert checkpoint.hash == hash
   end
 
   test "a batch processor event hands handle_batch one of the batch's pathways" do
@@ -189,18 +213,12 @@ defmodule DdDataStreams.BroadwayTest do
     # handle_batch/4 answering the batch with one message per consumed message.
     published =
       for _ <- messages do
-        DdDataStreams.publish(
-          "orders",
-          %{data: "hello", attributes: nil, ordering_key: nil},
-          & &1
-        )
+        {_key, value} = DdDataStreams.produce("orders", "hello")
+        assert_receive {:checkpoint, checkpoint}
+        {checkpoint, value}
       end
 
-    produced =
-      for _ <- published do
-        assert_receive {:checkpoint, checkpoint}
-        checkpoint
-      end
+    produced = Enum.map(published, &elem(&1, 0))
 
     assert length(produced) == 3
     assert Enum.all?(produced, &(&1.parent_hash == merged_hash))
@@ -208,9 +226,57 @@ defmodule DdDataStreams.BroadwayTest do
 
     produce_hash = produced |> hd() |> Map.fetch!(:hash)
 
-    for outgoing <- published do
-      assert %Pathway{hash: ^produce_hash} = Propagator.get(outgoing.attributes)
+    for {_checkpoint, value} <- published do
+      assert {:ok, %Pathway{hash: ^produce_hash}} = Propagator.decode_str(value)
     end
+  end
+
+  test "produce_batch records one checkpoint per payload and returns one pair" do
+    header = reference_header()
+    message = pubsub_message(%{"dd-pathway-ctx-base64" => header.base64})
+
+    assert :ok = DdDataStreams.attach()
+    consume_event(message)
+    assert_receive {:checkpoint, consumed}
+
+    {key, value} =
+      DdDataStreams.produce_batch("orders", Stream.map(["one", "two", "three"], & &1))
+
+    assert key == "dd-pathway-ctx-base64"
+    assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
+
+    produced =
+      for _ <- 1..3 do
+        assert_receive {:checkpoint, checkpoint}
+        checkpoint
+      end
+
+    assert Enum.all?(produced, &(&1.parent_hash == consumed.hash))
+    assert Enum.all?(produced, &(&1.hash == hash))
+    assert produced |> Enum.map(& &1.payload_size) |> Enum.sort() == [3, 3, 5]
+    assert produced |> Enum.map(& &1.timestamp) |> Enum.uniq() |> length() == 1
+  end
+
+  test "produce_batch of an empty enumerable returns []" do
+    assert :ok = DdDataStreams.attach()
+
+    assert DdDataStreams.produce_batch("orders", []) == []
+    assert DdDataStreams.produce_batch("orders", Stream.map([], & &1)) == []
+    refute_receive {:checkpoint, _checkpoint}
+  end
+
+  test "produce rejects an invalid payload size option" do
+    assert :ok = DdDataStreams.attach()
+
+    assert_raise ArgumentError, ~r/:payload_size/, fn ->
+      DdDataStreams.produce("orders", "hello", payload_size: -1)
+    end
+
+    assert_raise ArgumentError, ~r/:payload_size/, fn ->
+      DdDataStreams.produce_batch("orders", ["hello"], payload_size: 1)
+    end
+
+    refute_receive {:checkpoint, _checkpoint}
   end
 
   test "a message without a receive time is stamped when the checkpoint is taken" do
@@ -254,12 +320,12 @@ defmodule DdDataStreams.BroadwayTest do
     assert consumed.edge_latency == 7
 
     # The stage producing from that message reports its edge with the same
-    # extractor, and writes the header list it was given.
-    published = DdDataStreams.publish("orders-out", %{data: "hello", headers: []}, & &1)
+    # extractor, and returns the pair its draw client would write.
+    {_key, value} = DdDataStreams.produce("orders-out", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.tags == ["direction:out", "topic:orders-out", "type:kafka"]
-    assert [{"dd-pathway-ctx-base64", _encoded}] = published.headers
+    assert {:ok, _pathway} = Propagator.decode_str(value)
 
     # A Pub/Sub message in the same application is still named by its own
     # extractor, from its own metadata.
@@ -270,8 +336,7 @@ defmodule DdDataStreams.BroadwayTest do
     assert pubsub_consumed.parent_hash == header.hash
 
     # And a produce after it is a Pub/Sub produce without being told so.
-    _published =
-      DdDataStreams.publish("orders", %{data: "hello", attributes: %{}}, & &1)
+    _pair = DdDataStreams.produce("orders", "hello")
 
     assert_receive {:checkpoint, pubsub_produced}
     assert pubsub_produced.tags == @produce_tags
@@ -292,10 +357,8 @@ defmodule DdDataStreams.BroadwayTest do
 
     # Consumed from Kafka, published to Pub/Sub: the topic alone cannot say
     # which bus it goes to, so the outgoing extractor is named.
-    _published =
-      DdDataStreams.publish("orders", %{data: "hello", attributes: %{}}, & &1,
-        extractor: DdDataStreams.Extractor.GooglePubSub
-      )
+    _pair =
+      DdDataStreams.produce("orders", "hello", extractor: DdDataStreams.Extractor.GooglePubSub)
 
     assert_receive {:checkpoint, produced}
     assert produced.tags == @produce_tags
@@ -317,11 +380,11 @@ defmodule DdDataStreams.BroadwayTest do
     # with the fan-in pathway for its own produce edge to be named.
     batch_event(messages)
 
-    published = DdDataStreams.publish("orders-out", %{data: "hello", headers: []}, & &1)
+    {_key, value} = DdDataStreams.produce("orders-out", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.tags == ["direction:out", "topic:orders-out", "type:kafka"]
-    assert [{"dd-pathway-ctx-base64", _encoded}] = published.headers
+    assert {:ok, _pathway} = Propagator.decode_str(value)
 
     # A batch no extractor can name leaves neither a pathway nor an extractor.
     batch_event([%{data: "hello", metadata: %{}}])
@@ -333,11 +396,11 @@ defmodule DdDataStreams.BroadwayTest do
   test "a produce with no consuming stage needs one extractor to be configured" do
     assert :ok = DdDataStreams.attach()
 
-    message = %{data: "hello", attributes: %{}}
-    assert DdDataStreams.publish("orders", message, & &1)
+    assert {"dd-pathway-ctx-base64", value} = DdDataStreams.produce("orders", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.tags == @produce_tags
+    assert {:ok, _pathway} = Propagator.decode_str(value)
 
     Application.put_env(:dd_data_streams, :extractors, [
       DdDataStreams.Extractor.GooglePubSub,
@@ -345,7 +408,7 @@ defmodule DdDataStreams.BroadwayTest do
     ])
 
     assert_raise ArgumentError, ~r/pass `extractor: MyApp.Extractor`/, fn ->
-      DdDataStreams.publish("orders", message, & &1)
+      DdDataStreams.produce("orders", "hello")
     end
   end
 
@@ -391,14 +454,14 @@ defmodule DdDataStreams.BroadwayTest do
     refute_receive {:checkpoint, _second}
     assert Context.get() == nil
 
-    published =
-      DdDataStreams.publish("orders", %{data: "hello", attributes: nil, ordering_key: nil}, & &1)
+    {key, value} = DdDataStreams.produce("orders", "hello")
 
     assert_receive {:checkpoint, produced}
     assert produced.parent_hash == 0
     assert produced.hash == produce_hash(0)
 
-    assert %Pathway{hash: hash} = Propagator.get(published.attributes)
+    assert key == "dd-pathway-ctx-base64"
+    assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
     assert hash == produced.hash
   end
 
@@ -414,7 +477,7 @@ defmodule DdDataStreams.BroadwayTest do
     refute_receive {:checkpoint, _second}
   end
 
-  test "nothing is attached or injected while the library is disabled" do
+  test "nothing is attached or recorded while the library is disabled" do
     System.put_env("DD_DATA_STREAMS_ENABLED", "false")
 
     assert :ok = DdDataStreams.attach()
@@ -423,8 +486,9 @@ defmodule DdDataStreams.BroadwayTest do
     consume_event(pubsub_message(nil))
     refute_receive {:checkpoint, _checkpoint}
 
-    message = %{data: "hello", attributes: %{"origin" => "eu"}, ordering_key: nil}
-    assert DdDataStreams.publish("orders", message, & &1) == message
+    assert DdDataStreams.produce("orders", "hello") == nil
+    assert DdDataStreams.produce_batch("orders", ["hello"]) == nil
+    assert DdDataStreams.produce_batch("orders", []) == nil
     refute_receive {:checkpoint, _checkpoint}
   end
 

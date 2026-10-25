@@ -3,12 +3,12 @@ defmodule DdDataStreams.Checkpoints do
   The consume and produce checkpoints of a message, without knowing the broker.
 
   `consume/3` continues the pathway a received message carries in its
-  `dd-pathway-ctx-base64` header, or starts a new one when the header is absent
-  or unusable, and measures the consume edge. `publish/4` measures the produce
-  edge, writes the pathway that continues it into the outgoing headers, and
-  hands the message to the caller's publish function. Neither function sends
-  anything: each returns its checkpoint for `DdDataStreams.Aggregator.add/1`,
-  which keeps the module pure and callable from anywhere in a pipeline.
+  configured pathway header, or starts a new one when the header is absent or
+  unusable, and measures the consume edge. `produce/3` measures the produce
+  edge and returns the checkpointed pathway together with its checkpoint; it
+  does not encode, send or mutate anything. Neither function sends anything:
+  each returns its checkpoint for `DdDataStreams.Aggregator.add/1`, which keeps
+  the module pure and callable from anywhere in a pipeline.
 
   The edge tags are the caller's: this module records exactly the tags it is
   given, in the order it is given them. `DdDataStreams` builds them, from the
@@ -16,7 +16,8 @@ defmodule DdDataStreams.Checkpoints do
 
   ## Messages
 
-  Both functions take the parts of a message the checkpoints need, as a map:
+  `consume/3` takes the parts of an inbound message the checkpoints need, as a
+  map:
 
     * `:data` - the message body, required
     * `:attributes` - the message attributes, as a map: `nil` when the broker
@@ -29,25 +30,28 @@ defmodule DdDataStreams.Checkpoints do
   These are the values `BroadwayCloudPubSub` v2 exposes as `message.data`,
   `message.metadata.attributes` and `message.metadata.orderingKey`, and the
   shape `BroadwayKafka` messages take once their `message.metadata.headers` list
-  is passed as `:headers`. Extra keys are left alone, so a caller can pass its
-  whole message map and get it back from `publish/4` with the pathway header
-  added, in the same carrier it came in.
+  is passed as `:headers`. Extra keys are left alone.
+
+  `produce/3` takes no message: the caller measures the outgoing payload, or
+  lets `DdDataStreams.produce/3` measure its `data`.
 
   ## Payload size
 
-  The reported payload size in bytes is the data, the ordering key, and every
-  attribute's or header's key and value. `nil` values count as zero. The produce
-  size is measured before the pathway header is written, as dd-trace-go v2.13
-  sizes an SQS send, so it is not inflated by this library. A consume size does
-  include the inbound `dd-pathway-ctx-base64` entry (about 49 bytes); the two
-  sides of one edge therefore differ by that header.
+  The consume size in bytes is the data, the ordering key, and every attribute's
+  or header's key and value. `nil` values count as zero. It is measured before
+  the pathway is read, so it includes the inbound header (about 49 bytes).
+
+  The produce size is the caller's: `DdDataStreams.produce/3` passes the
+  `:payload_size` option when given, or the size of `data` otherwise. The
+  pathway header written by the caller is not part of it, so the produce size
+  is not inflated by this library.
 
   ## Latency
 
   `consume/3` checkpoints at `received_at`, in native time units, so the consume
   edge latency is the time the message spent waiting in the bus rather than the
   time it spent queued inside Broadway. A message that carried no pathway starts
-  at `received_at`, so both latencies are zero. `publish/4` checkpoints at the
+  at `received_at`, so both latencies are zero. `produce/3` checkpoints at the
   current time. Times are Unix milliseconds after conversion.
 
   ## Pathways
@@ -57,9 +61,9 @@ defmodule DdDataStreams.Checkpoints do
   an undecodable, truncated or non-base64 header is ignored and the message is
   consumed on a new pathway, as dd-trace-java does.
 
-  `publish/4` returns the pathway the injected header carries. When one consumed
-  message produces several messages, as a batch producer does, pass the
-  *received* pathway to every `publish/4` call: each produce then has the
+  `produce/3` returns the pathway the caller encodes into the message. When one
+  consumed message produces several messages, as a batch producer does, pass the
+  *received* pathway to every `produce/3` call: each produce then has the
   consume hash as its parent and all of them share one produce node, instead of
   chaining produce edges onto each other.
   """
@@ -83,14 +87,14 @@ defmodule DdDataStreams.Checkpoints do
 
   Returns the pathway the checkpoint reached and the checkpoint itself, with
   its `:payload_size` in bytes. Hand the checkpoint to
-  `DdDataStreams.Aggregator.add/1`, and the pathway to `publish/4` when this
+  `DdDataStreams.Aggregator.add/1`, and the pathway to `produce/3` when this
   stage produces messages, so the produce edge continues the consumed one.
   """
   @spec consume(message(), [String.t()], integer()) :: {Pathway.t(), Pathway.checkpoint()}
   def consume(%{data: _} = message, tags, received_at)
       when is_list(tags) and is_integer(received_at) do
     {_field, carrier} = carrier(message)
-    pathway = Propagator.get(carrier) || Pathway.new(%{})
+    pathway = Propagator.get(carrier, Config.header()) || Pathway.new(%{})
 
     {pathway, checkpoint} =
       Pathway.set_checkpoint(pathway, tags,
@@ -105,39 +109,36 @@ defmodule DdDataStreams.Checkpoints do
 
   @doc """
   Sets the produce checkpoint for a message about to be published on the edge
-  described by `tags`, injects the resulting pathway into the message's
-  attributes or headers, and calls `publish_fun` with that message.
+  described by `tags` and returns the checkpointed pathway together with its
+  checkpoint.
 
   `tags` are the edge tags in full, direction included, such as
   `["direction:out", "topic:orders", "type:google-pubsub"]`.
 
-  `pathway` is the pathway the publish continues: the one `consume/3` returned
+  `pathway` is the pathway the produce continues: the one `consume/3` returned
   for a message received earlier, or a new pathway when there is none. The
-  checkpoint's `:payload_size` is the byte size of the message before the
-  pathway header is written.
+  checkpoint's `:payload_size` is `payload_size`, which the caller measures
+  before the pathway header is written.
 
-  `publish_fun` is the caller's own publish function. It receives the message
-  map with `dd-pathway-ctx-base64` set, replacing any header the caller put
-  under that name, and its return value is passed through:
+  This function records nothing and encodes nothing. Hand the checkpoint to
+  `DdDataStreams.Aggregator.add/1`, encode the returned pathway with the
+  configured header, and add that pair to the outgoing message:
 
-      {pathway, checkpoint, :ok} =
-        DdDataStreams.Checkpoints.publish(tags, message, pathway, fn outgoing ->
-          MyApp.Publisher.publish(outgoing.data, attributes: outgoing.attributes)
-        end)
+      {pathway, checkpoint} =
+        DdDataStreams.Checkpoints.produce(tags, pathway, byte_size(data))
 
       DdDataStreams.Aggregator.add(checkpoint)
 
-  Returns the checkpointed produce pathway, the checkpoint, and whatever
-  `publish_fun` returned. The returned pathway is the one in the injected
-  header; keep the input pathway for any further publishes of the same batch.
-  """
-  @spec publish([String.t()], message(), Pathway.t(), (message() -> result)) ::
-          {Pathway.t(), Pathway.checkpoint(), result}
-        when result: var
-  def publish(tags, %{data: _} = message, %Pathway{} = pathway, publish_fun)
-      when is_list(tags) and is_function(publish_fun, 1) do
-    payload_size = payload_size(message)
+      {DdDataStreams.Config.header(), DdDataStreams.Propagator.encode_str(pathway)}
 
+  Keep the input pathway for any further produces of the same batch: every
+  produce then has the consumed hash as its parent and they share one produce
+  node.
+  """
+  @spec produce([String.t()], Pathway.t(), non_neg_integer()) ::
+          {Pathway.t(), Pathway.checkpoint()}
+  def produce(tags, %Pathway{} = pathway, payload_size)
+      when is_list(tags) and is_integer(payload_size) and payload_size >= 0 do
     {pathway, checkpoint} =
       Pathway.set_checkpoint(pathway, tags,
         service: Config.service(),
@@ -145,16 +146,12 @@ defmodule DdDataStreams.Checkpoints do
         primary_tag: Config.primary_tag()
       )
 
-    {field, carrier} = carrier(message)
-    published = Map.put(message, field, Propagator.put(carrier, pathway))
-    checkpoint = Map.put(checkpoint, :payload_size, payload_size)
-
-    {pathway, checkpoint, publish_fun.(published)}
+    {pathway, Map.put(checkpoint, :payload_size, payload_size)}
   end
 
   # The carrier is whichever of the two shapes the message arrived with, so a
-  # Kafka pipeline gets its header list back and a Pub/Sub pipeline its map.
-  # A message with neither is published with an attributes map.
+  # Kafka pipeline reads its header list back and a Pub/Sub pipeline its map.
+  # A message with neither is read as an attributes map.
   @spec carrier(message()) :: {:attributes | :headers, map() | [{String.t(), String.t()}]}
   defp carrier(%{headers: headers}) when is_list(headers), do: {:headers, headers}
   defp carrier(message), do: {:attributes, Map.get(message, :attributes) || %{}}

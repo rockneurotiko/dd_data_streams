@@ -13,9 +13,9 @@ Pub/Sub or network dependency, and `mix compile`, `mix test`, `mix format` and
 - `run.exs` — a real Broadway pipeline on the client's pull producer:
   `DdDataStreams.attach()` installs the consumption handlers, which record one
   checkpoint per message with the broker's receive time and leave the
-  checkpointed pathway in the process context, and `publish/3` records the
-  produce checkpoint on that pathway and injects `dd-pathway-ctx-base64` into a
-  message published to a second topic. The capture transport writes the flushed
+  checkpointed pathway in the process context, and `produce/3` records the
+  produce checkpoint on that pathway and returns the `dd-pathway-ctx-base64`
+  pair added to a message published to a second topic. The capture transport writes the flushed
   body to disk instead of posting it, so the run is observable without an agent.
   At the end it *checks* what happened — the context pathway is the consume
   checkpoint chained onto the inbound hash, the produce header chains onto that

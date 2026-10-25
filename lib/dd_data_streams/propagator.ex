@@ -1,8 +1,11 @@
 defmodule DdDataStreams.Propagator do
   @moduledoc """
-  The `dd-pathway-ctx-base64` codec.
+  The pathway header codec.
 
-  The payload is the 64-bit unsigned hash in little-endian byte order followed by
+  The default header key is `dd-pathway-ctx-base64`, the name the official
+  Datadog tracers use; `DdDataStreams.Config.header/0` is the configured key the
+  library reads and writes. The payload is the 64-bit unsigned hash in
+  little-endian byte order followed by
   the pathway start and the edge start as zigzag-encoded varints of Unix
   milliseconds, with no separator or length prefix, and the whole thing is
   standard base64. The timestamps are length-parsed rather than assumed to be a
@@ -17,14 +20,15 @@ defmodule DdDataStreams.Propagator do
 
   import Bitwise
 
-  @header "dd-pathway-ctx-base64"
+  @default_header "dd-pathway-ctx-base64"
 
   # A 64-bit unsigned integer takes at most nine varint bytes: eight groups of
   # seven bits plus a final byte carrying the remaining eight.
   @max_varint_bytes 8
 
   @doc """
-  Puts the pathway into a message's headers under `#{@header}`.
+  Puts the pathway into a message's headers under `key`, which defaults to
+  `#{@default_header}`.
 
   The headers are either an attribute map or a list of `{key, value}` pairs, as
   `BroadwayKafka` exposes them; an existing entry under the same key is
@@ -33,42 +37,50 @@ defmodule DdDataStreams.Propagator do
   produce path can call this unconditionally.
   """
   @spec put(map() | [{binary(), binary()}], Pathway.t()) :: map() | [{binary(), binary()}]
-  def put(attributes, %Pathway{hash: 0}), do: attributes
+  @spec put(map() | [{binary(), binary()}], Pathway.t(), String.t()) ::
+          map() | [{binary(), binary()}]
+  def put(attributes, pathway), do: put(attributes, pathway, @default_header)
 
-  def put(attributes, %Pathway{} = pathway) when is_list(attributes) do
+  def put(attributes, %Pathway{hash: 0}, _key), do: attributes
+
+  def put(attributes, %Pathway{} = pathway, key) when is_list(attributes) do
     [
-      {@header, encode_str(pathway)}
+      {key, encode_str(pathway)}
       | Enum.reject(attributes, fn
-          {key, _value} -> key == @header
+          {existing, _value} -> existing == key
           _other -> false
         end)
     ]
   end
 
-  def put(attributes, %Pathway{} = pathway) do
-    Map.put(attributes, @header, encode_str(pathway))
+  def put(attributes, %Pathway{} = pathway, key) do
+    Map.put(attributes, key, encode_str(pathway))
   end
 
   @doc """
-  Reads the pathway out of a message's headers, as an attribute map or a list
-  of `{key, value}` pairs.
+  Reads the pathway out of a message's headers under `key`, which defaults to
+  `#{@default_header}`.
 
-  Returns `nil` when the header is absent, is not a valid base64 header, or
-  does not contain a hash and two timestamps.
+  The headers are an attribute map or a list of `{key, value}` pairs. Returns
+  `nil` when the header is absent, is not a valid base64 header, or does not
+  contain a hash and two timestamps.
   """
   @spec get(map() | [{binary(), binary()}] | nil) :: Pathway.t() | nil
-  def get(attributes) when is_map(attributes) do
-    attributes |> Map.get(@header) |> decode_value()
+  @spec get(map() | [{binary(), binary()}] | nil, String.t()) :: Pathway.t() | nil
+  def get(attributes), do: get(attributes, @default_header)
+
+  def get(attributes, key) when is_map(attributes) do
+    attributes |> Map.get(key) |> decode_value()
   end
 
-  def get(attributes) when is_list(attributes) do
-    case List.keyfind(attributes, @header, 0) do
-      {@header, value} -> decode_value(value)
+  def get(attributes, key) when is_list(attributes) do
+    case List.keyfind(attributes, key, 0) do
+      {^key, value} -> decode_value(value)
       nil -> nil
     end
   end
 
-  def get(_attributes), do: nil
+  def get(_attributes, _key), do: nil
 
   defp decode_value(value) when is_binary(value) do
     case decode_str(value) do
