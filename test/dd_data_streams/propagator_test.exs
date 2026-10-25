@@ -1,15 +1,31 @@
 defmodule DdDataStreams.PropagatorTest do
   use ExUnit.Case, async: true
 
+  use Mimic
+
+  alias DdDataStreams.Aggregator
+  alias DdDataStreams.Checkpoints
   alias DdDataStreams.Pathway
   alias DdDataStreams.Propagator
+  alias DdDataStreams.Transport
 
   @key "dd-pathway-ctx-base64"
+
+  # The floor of the window the decoder believes, 2000-01-01 in milliseconds.
+  @epoch_floor_ms 946_684_800_000
+
+  @consume_tags ["direction:in", "subscription:orders-sub", "type:google-pubsub"]
 
   @headers Path.expand("../fixtures/propagation/headers.txt", __DIR__)
            |> File.read!()
            |> Code.eval_string()
            |> elem(0)
+
+  defp plausible_start?(0), do: true
+
+  defp plausible_start?(start) do
+    start >= @epoch_floor_ms and start <= System.system_time(:millisecond) + 60_000
+  end
 
   test "the wire attribute name is dd-pathway-ctx-base64" do
     pathway = %Pathway{hash: 1, pathway_start: 0, edge_start: 0}
@@ -19,17 +35,23 @@ defmodule DdDataStreams.PropagatorTest do
 
   test "decodes every header from the official tracers" do
     for header <- @headers do
-      assert {:ok, pathway} = Propagator.decode_str(header.base64),
-             "could not decode #{header.provenance}"
+      if plausible_start?(header.pathway_start) do
+        assert {:ok, pathway} = Propagator.decode_str(header.base64),
+               "could not decode #{header.provenance}"
 
-      assert pathway.hash == header.hash,
-             "hash of #{header.provenance}"
+        assert pathway.hash == header.hash,
+               "hash of #{header.provenance}"
 
-      assert pathway.pathway_start == header.pathway_start,
-             "pathway start of #{header.provenance}"
+        assert pathway.pathway_start == header.pathway_start,
+               "pathway start of #{header.provenance}"
 
-      assert pathway.edge_start == header.edge_start,
-             "edge start of #{header.provenance}"
+        assert pathway.edge_start == header.edge_start,
+               "edge start of #{header.provenance}"
+      else
+        # A tracer emits it, but the start is a clock error rather than a time
+        # this node shared the pathway with, so the header is unusable.
+        assert Propagator.decode_str(header.base64) == :error, header.provenance
+      end
     end
   end
 
@@ -94,8 +116,15 @@ defmodule DdDataStreams.PropagatorTest do
       raw = Propagator.encode(pathway)
 
       assert byte_size(raw) == 8 + 2 * varint_bytes
-      assert {:ok, ^pathway} = Propagator.decode(raw)
-      assert {:ok, ^pathway} = Propagator.decode_str(Propagator.encode_str(pathway))
+
+      # Every start that needs several bytes is outside the window the decoder
+      # believes, so only the one-byte start survives the round trip.
+      if plausible_start?(timestamp) do
+        assert {:ok, ^pathway} = Propagator.decode(raw)
+        assert {:ok, ^pathway} = Propagator.decode_str(Propagator.encode_str(pathway))
+      else
+        assert Propagator.decode(raw) == :error
+      end
     end
   end
 
@@ -105,17 +134,16 @@ defmodule DdDataStreams.PropagatorTest do
     assert Propagator.encode(pathway) ==
              Base.decode16!("0100000000000000BF9A0C9F8D06", case: :mixed)
 
-    assert {:ok, ^pathway} = Propagator.decode(Propagator.encode(pathway))
+    assert Propagator.decode(Propagator.encode(pathway)) == :error
   end
 
   test "the ninth byte of a varint ends it even with the continuation bit set" do
-    # Eight continuation bytes carrying zero bits, then one byte carrying the
-    # top eight bits (0xff); the following 0x00 is the second timestamp.
+    # Eight continuation bytes, then one byte carrying the top eight bits
+    # (0xff): the ninth ends the varint instead of reading the 0x00 after it,
+    # and the start it decodes to is no time a tracer could have stamped.
     raw = <<0::little-64, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0xFF, 0x00>>
 
-    assert {:ok, pathway} = Propagator.decode(raw)
-    assert pathway.pathway_start == 0x7F80_0000_0000_0000
-    assert pathway.edge_start == 0
+    assert Propagator.decode(raw) == :error
   end
 
   test "bytes after the two timestamps are ignored" do

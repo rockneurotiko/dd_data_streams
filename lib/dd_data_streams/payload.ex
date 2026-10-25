@@ -181,6 +181,11 @@ defmodule DdDataStreams.Payload do
 
   defp bin(bytes), do: <<0xC6, byte_size(bytes)::32, bytes::binary>>
 
+  # A MsgPack uint carries no sign, and `number < 0x80` is true for every
+  # negative, so one reaching here would silently truncate to its low byte.
+  defp uint(number) when number < 0,
+    do: raise(ArgumentError, "cannot encode the negative integer #{number} as a MsgPack uint")
+
   # positive fixint, uint8, uint16, uint32, uint64.
   defp uint(number) when number < 0x80, do: <<number>>
   defp uint(number) when number < 0x100, do: <<0xCC, number>>

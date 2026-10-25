@@ -41,12 +41,24 @@ defmodule DdDataStreams.PropagatorInteropTest do
   # the agreeing set.
   @wide_start 72_057_594_037_927_936
 
+  @epoch_floor_ms 946_684_800_000
+
+  defp plausible_start?(0), do: true
+
+  defp plausible_start?(start) do
+    start >= @epoch_floor_ms and start <= System.system_time(:millisecond) + 60_000
+  end
+
   test "decodes the headers the official tracers emitted" do
     for header <- @tracer_headers do
-      assert {:ok, pathway} = Propagator.decode_str(header.base64), header.provenance
-      assert pathway.hash == header.hash, header.provenance
-      assert pathway.pathway_start == header.pathway_start, header.provenance
-      assert pathway.edge_start == header.edge_start, header.provenance
+      if plausible_start?(header.pathway_start) and plausible_start?(header.edge_start) do
+        assert {:ok, pathway} = Propagator.decode_str(header.base64), header.provenance
+        assert pathway.hash == header.hash, header.provenance
+        assert pathway.pathway_start == header.pathway_start, header.provenance
+        assert pathway.edge_start == header.edge_start, header.provenance
+      else
+        assert Propagator.decode_str(header.base64) == :error, header.provenance
+      end
     end
   end
 
@@ -71,13 +83,15 @@ defmodule DdDataStreams.PropagatorInteropTest do
 
     encoded = Propagator.encode_str(Pathway.new(wide))
     assert encoded == wide.base64
-    assert {:ok, own} = Propagator.decode_str(wide.base64)
-    assert own.pathway_start == @wide_start
-    assert own.edge_start == @wide_start
+
+    # The start is far outside any plausible window, so the header is rejected
+    # rather than believed; the varint itself is still parsed in full, which is
+    # what distinguishes this library from dd-trace-go's truncation.
+    assert Propagator.decode_str(wide.base64) == :error
 
     # dd-trace-py 3.17.0 parses the full varint, so it reads the header this
     # library emits and re-encodes it unchanged.
-    assert wide.python.pathway_start == own.pathway_start
+    assert wide.python.pathway_start == @wide_start
     assert wide.python.reencoded == encoded
 
     # dd-trace-go v2 (`DecodeBase64`) stops after seven groups and keeps

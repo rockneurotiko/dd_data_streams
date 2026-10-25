@@ -26,6 +26,15 @@ defmodule DdDataStreams.Propagator do
   # seven bits plus a final byte carrying the remaining eight.
   @max_varint_bytes 8
 
+  # A start is a Unix time in milliseconds the reported latency is measured
+  # back from, so a start before 2000-01-01 is not a clock a tracer could have
+  # stamped: believing it would report a latency of decades.
+  @epoch_floor_ms 946_684_800_000
+
+  # How far a start may sit in the future before the header is dropped rather
+  # than believed: a minute is past any clock skew between two nodes.
+  @future_horizon_ms 60_000
+
   # An entry is a tuple of any arity above one whose first element is the key,
   # whatever else the broker puts in it: its value is the last element.
   defguardp entry(candidate, key)
@@ -72,7 +81,8 @@ defmodule DdDataStreams.Propagator do
   The headers are an attribute map or a list of tuples whose first element is
   the header key and whose value is its last element. Returns `nil` when the
   header is absent, is not a valid base64 header, does not contain a hash and
-  two timestamps, or is carried in a shape no entry can be read from.
+  two timestamps, carries a start outside the window `decode/1` believes, or is
+  carried in a shape no entry can be read from.
   """
   @spec get(map() | [tuple()] | nil) :: Pathway.t() | nil
   @spec get(map() | [tuple()] | nil, String.t()) :: Pathway.t() | nil
@@ -117,20 +127,28 @@ defmodule DdDataStreams.Propagator do
   @doc """
   Decodes a raw header.
 
-  Bytes after the two timestamps are ignored, and a varint need not be encoded in
-  its shortest form. The ninth byte of a varint ends it even when its
+  Bytes after the two timestamps are ignored, and a varint need not be encoded
+  in its shortest form. The ninth byte of a varint ends it even when its
   continuation bit is set.
+
+  A start outside the plausible window makes the whole header unusable rather
+  than trustworthy: `get/1` then yields `nil` and the consumer starts a new
+  pathway, as it does for every other malformed header.
   """
   @spec decode(binary()) :: {:ok, Pathway.t()} | :error
   def decode(binary) when is_binary(binary) do
     with <<hash::little-64, rest::binary>> <- binary,
-         {:ok, pathway_start, rest} <- take_varint(rest, 0, 0, 0),
-         {:ok, edge_start, _rest} <- take_varint(rest, 0, 0, 0) do
+         {:ok, pathway_start_zz, rest} <- take_varint(rest, 0, 0, 0),
+         {:ok, edge_start_zz, _rest} <- take_varint(rest, 0, 0, 0),
+         pathway_start <- unzigzag(pathway_start_zz),
+         edge_start <- unzigzag(edge_start_zz),
+         true <- plausible_start?(pathway_start),
+         true <- plausible_start?(edge_start) do
       {:ok,
        %Pathway{
          hash: hash,
-         pathway_start: unzigzag(pathway_start),
-         edge_start: unzigzag(edge_start)
+         pathway_start: pathway_start,
+         edge_start: edge_start
        }}
     else
       _ -> :error
@@ -159,6 +177,15 @@ defmodule DdDataStreams.Propagator do
   end
 
   def decode_str(_encoded), do: :error
+
+  # Zero is the start a pathway carries until its first checkpoint, so it is
+  # overwritten rather than believed; any other start has to be a time this
+  # node could have shared the pathway with.
+  defp plausible_start?(0), do: true
+
+  defp plausible_start?(start),
+    do:
+      start >= @epoch_floor_ms and start <= System.system_time(:millisecond) + @future_horizon_ms
 
   defp zigzag(value) when value >= 0, do: value * 2
   defp zigzag(value), do: -value * 2 - 1
