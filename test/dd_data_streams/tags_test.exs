@@ -18,6 +18,11 @@ defmodule DdDataStreams.TagsTest do
     assert Tags.parse(":") == :error
   end
 
+  test "parse/1 rejects a tag that is not a string" do
+    assert Tags.parse(:not_a_string) == :error
+    assert Tags.parse(nil) == :error
+  end
+
   test "encode/1 is the inverse of parse/1" do
     assert Tags.encode({"direction", "in"}) == "direction:in"
     assert Tags.encode({"topic", "orders:eu"}) == "topic:orders:eu"

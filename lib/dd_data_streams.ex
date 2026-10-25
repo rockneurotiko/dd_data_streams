@@ -73,9 +73,10 @@ defmodule DdDataStreams do
   The handlers never raise. Telemetry detaches a handler that raises, for every
   pipeline in the VM, and never reattaches it, so a single malformed message
   would stop monitoring for the whole application. A message the library cannot
-  record is skipped instead: the pathway of the previous message is cleared, so
-  a later produce does not continue it, and the reason is logged and reported as
-  a `[:dd_data_streams, :handler, :error]` telemetry event.
+  record is skipped instead: the pathway and the extractor of the previous
+  message are cleared, so a later produce does not continue them, and the reason
+  is logged and reported as a `[:dd_data_streams, :handler, :error]` telemetry
+  event.
 
   ## Pathways that are not a Broadway stage
 
@@ -367,9 +368,9 @@ defmodule DdDataStreams do
 
   def handle_event(_event, _measurements, _metadata, _config), do: :ok
 
-  # A message the library cannot record is skipped, not failed: the pathway of
-  # the previous message is cleared, so a later produce in this stage does not
-  # continue it, and the reason is reported once.
+  # A message or a batch the library cannot record is skipped, not failed: the
+  # stage's previous pathway and extractor are cleared, so a later produce does
+  # not continue them, and the reason is reported once.
   defp skipped(event, reason, stacktrace) do
     Context.clear()
 
@@ -385,9 +386,15 @@ defmodule DdDataStreams do
   defp report(message, metadata) do
     Logger.warning("#{message}: #{inspect(metadata[:reason])}")
 
-    :telemetry.execute(@error_event, %{count: 1}, metadata)
+    :telemetry.execute(@error_event, %{count: 1}, error_metadata(metadata))
 
     :ok
+  end
+
+  # Every report of the error event carries the same keys, so a consumer does
+  # not have to know which branch reported it.
+  defp error_metadata(metadata) do
+    Map.merge(%{event: nil, extractor: nil, reason: nil, stacktrace: nil}, metadata)
   end
 
   # The consume checkpoint of a message together with the extractor that named it.
@@ -423,35 +430,33 @@ defmodule DdDataStreams do
       {:ok, tags, parts} when is_list(tags) and is_map(parts) ->
         {:ok, tags, parts}
 
-      {:ok, _tags, _parts} ->
+      :error ->
+        :error
+
+      # A shape the library cannot use names no edge, like an extractor that
+      # found none.
+      _unusable ->
         report("a Data Streams extractor handed back an unusable edge", %{
           extractor: extractor,
           reason: :unusable_edge
         })
 
         :error
-
-      :error ->
-        :error
     end
   rescue
-    error ->
-      report("a Data Streams extractor failed", %{
-        extractor: extractor,
-        reason: error,
-        stacktrace: __STACKTRACE__
-      })
-
-      :error
+    error -> extractor_failed(extractor, error, __STACKTRACE__)
   catch
-    kind, reason ->
-      report("a Data Streams extractor failed", %{
-        extractor: extractor,
-        reason: {kind, reason},
-        stacktrace: __STACKTRACE__
-      })
+    kind, reason -> extractor_failed(extractor, {kind, reason}, __STACKTRACE__)
+  end
 
-      :error
+  defp extractor_failed(extractor, reason, stacktrace) do
+    report("a Data Streams extractor failed", %{
+      extractor: extractor,
+      reason: reason,
+      stacktrace: stacktrace
+    })
+
+    :error
   end
 
   defp received_at(parts) do

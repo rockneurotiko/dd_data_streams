@@ -66,8 +66,8 @@ defmodule DdDataStreams.Propagator do
   contain a hash and two timestamps, or is an entry of a header list that is
   not a pair.
   """
-  @spec get(map() | [{binary(), binary()}] | nil) :: Pathway.t() | nil
-  @spec get(map() | [{binary(), binary()}] | nil, String.t()) :: Pathway.t() | nil
+  @spec get(map() | [tuple()] | nil) :: Pathway.t() | nil
+  @spec get(map() | [tuple()] | nil, String.t()) :: Pathway.t() | nil
   def get(attributes), do: get(attributes, @default_header)
 
   def get(attributes, key) when is_map(attributes) do

@@ -80,7 +80,15 @@ defmodule DdDataStreams.HandlerSafetyTest do
 
     consume_event(message())
 
-    assert_receive {:skipped, %{extractor: Configurable, reason: %RuntimeError{}}}
+    assert_receive {:skipped,
+                    %{
+                      event: nil,
+                      extractor: Configurable,
+                      reason: %RuntimeError{},
+                      stacktrace: stacktrace
+                    }}
+
+    assert is_list(stacktrace)
   end
 
   test "the pathway of the previous message does not survive a failing one" do
@@ -115,6 +123,28 @@ defmodule DdDataStreams.HandlerSafetyTest do
     assert_receive {:checkpoint, checkpoint}
     assert checkpoint.tags == @tags
     assert length(:telemetry.list_handlers(@consume_event)) == 1
+  end
+
+  test "a failure inside the handler does not detach the handlers" do
+    Application.put_env(:dd_data_streams, :extractors, [Configurable])
+    Process.put(:extractor_result, {:ok, @tags, %{}})
+
+    assert :ok = DdDataStreams.attach()
+
+    consume_event(message())
+    assert_receive {:checkpoint, _checkpoint}
+    assert Context.get()
+
+    stub(Aggregator, :add, fn _checkpoint -> raise "aggregator boom" end)
+
+    consume_event(message())
+
+    assert length(:telemetry.list_handlers(@consume_event)) == 1
+    assert length(:telemetry.list_handlers(@fan_in_event)) == 1
+    assert Context.get() == nil
+    assert Context.get_extractor() == nil
+
+    assert_receive {:skipped, %{event: @consume_event, reason: %RuntimeError{}}}
   end
 
   test "a tag that is not a string is dropped and the checkpoint is recorded" do
@@ -164,6 +194,27 @@ defmodule DdDataStreams.HandlerSafetyTest do
   test "an extractor that hands back an unusable shape names no edge" do
     Application.put_env(:dd_data_streams, :extractors, [Configurable])
     Process.put(:extractor_result, {:ok, "direction:in", %{}})
+
+    assert :ok = DdDataStreams.attach()
+
+    consume_event(message())
+
+    refute_received {:checkpoint, _checkpoint}
+    assert Context.get() == nil
+    assert length(:telemetry.list_handlers(@consume_event)) == 1
+
+    assert_receive {:skipped,
+                    %{
+                      event: nil,
+                      extractor: Configurable,
+                      reason: :unusable_edge,
+                      stacktrace: nil
+                    }}
+  end
+
+  test "an extractor that hands back an unknown shape names no edge" do
+    Application.put_env(:dd_data_streams, :extractors, [Configurable])
+    Process.put(:extractor_result, {:nope, 1})
 
     assert :ok = DdDataStreams.attach()
 

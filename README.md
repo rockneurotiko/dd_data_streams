@@ -594,10 +594,18 @@ host does not add it to its own supervision tree.
 
 ## Telemetry
 
-The library emits one event:
+The library emits two events:
 
 * `[:dd_data_streams, :flush, :error]`, once per failed Agent flush, with
   `%{count: 1}` measurements and `%{service: service, reason: reason}` metadata.
+
+* `[:dd_data_streams, :handler, :error]`, once per failure: one per failing
+  extractor, one per edge the library cannot use, and one per message or batch
+  the handler could not record. The measurements are `%{count: 1}` and the
+  metadata is `%{event: event, extractor: extractor, reason: reason,
+  stacktrace: stacktrace}`, with `nil` for the keys that do not apply. The
+  reason is the exception that was raised, `:unusable_edge` for an edge the
+  library cannot use, or `{kind, reason}` for a call that threw or exited.
 
 The HTTP request is best effort and is not retried.
 

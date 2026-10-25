@@ -30,9 +30,10 @@ defmodule DdDataStreams.Checkpoints do
   These are the values `BroadwayCloudPubSub` v2 exposes as `message.data`,
   `message.metadata.attributes` and `message.metadata.orderingKey`, and the
   shape `BroadwayKafka` messages take once their `message.metadata.headers` list
-  is passed as `:headers`. Extra keys are left alone. Attributes or headers of
-  a shape the library cannot read are measured as empty rather than treated as
-  an error.
+  is passed as `:headers`. Extra keys are left alone. A message that carries
+  headers is read through them, and a header that is not a pair is measured as
+  empty. Otherwise an attributes value that is neither a map nor a list is read
+  as an empty attributes map, and a list of attributes is read as header pairs.
 
   `produce/3` takes no message: the caller measures the outgoing payload, or
   lets `DdDataStreams.produce/3` measure its `data`.
@@ -155,7 +156,7 @@ defmodule DdDataStreams.Checkpoints do
   # Kafka pipeline reads its header list back and a Pub/Sub pipeline its map.
   # A message with neither, or with attributes of a shape the library cannot
   # read, is read as an empty attributes map.
-  @spec carrier(message()) :: {:attributes | :headers, map() | [{String.t(), String.t()}]}
+  @spec carrier(message()) :: {:attributes | :headers, map() | [tuple()]}
   defp carrier(%{headers: headers}) when is_list(headers), do: {:headers, headers}
   defp carrier(%{attributes: attributes}) when is_map(attributes), do: {:attributes, attributes}
   defp carrier(%{attributes: attributes}) when is_list(attributes), do: {:attributes, attributes}
