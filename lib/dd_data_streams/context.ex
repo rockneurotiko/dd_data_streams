@@ -32,7 +32,6 @@ defmodule DdDataStreams.Context do
   alias DdDataStreams.Pathway
 
   @pathway_key :dd_data_streams_pathway
-  @extractor_key :dd_data_streams_extractor
 
   @doc """
   Stores `pathway` as the process's current pathway, with the extractor that
@@ -46,10 +45,15 @@ defmodule DdDataStreams.Context do
   publishes to another passes its own extractor to `DdDataStreams.produce/3`
   instead. `nil` leaves no extractor behind.
   """
-  @spec put(Pathway.t(), module() | nil) :: :ok
-  def put(%Pathway{} = pathway, extractor \\ nil) do
+  @spec put(Pathway.t()) :: :ok
+  def put(%Pathway{} = pathway) do
     Process.put(@pathway_key, pathway)
-    Process.put(@extractor_key, extractor)
+    :ok
+  end
+
+  @spec put(Pathway.t(), module() | nil) :: :ok
+  def put(%Pathway{} = pathway, extractor) do
+    Process.put(@pathway_key, %{pathway | extractor: extractor})
     :ok
   end
 
@@ -58,7 +62,7 @@ defmodule DdDataStreams.Context do
 
       iex> DdDataStreams.Context.put(%DdDataStreams.Pathway{hash: 7})
       iex> DdDataStreams.Context.get()
-      %DdDataStreams.Pathway{hash: 7, pathway_start: 0, edge_start: 0}
+      %DdDataStreams.Pathway{hash: 7, pathway_start: 0, edge_start: 0, extractor: nil}
 
   """
   @spec get() :: Pathway.t() | nil
@@ -74,7 +78,12 @@ defmodule DdDataStreams.Context do
 
   """
   @spec get_extractor() :: module() | nil
-  def get_extractor, do: Process.get(@extractor_key)
+  def get_extractor do
+    case get() do
+      %Pathway{extractor: extractor} -> extractor
+      _ -> nil
+    end
+  end
 
   @doc """
   Removes the process's current pathway.
@@ -89,7 +98,6 @@ defmodule DdDataStreams.Context do
   @spec clear() :: :ok
   def clear do
     Process.delete(@pathway_key)
-    Process.delete(@extractor_key)
     :ok
   end
 end

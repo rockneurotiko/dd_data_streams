@@ -27,7 +27,8 @@ defmodule DdDataStreams.Pathway do
   @type t :: %__MODULE__{
           hash: non_neg_integer(),
           pathway_start: non_neg_integer(),
-          edge_start: non_neg_integer()
+          edge_start: non_neg_integer(),
+          extractor: module() | nil
         }
 
   @typedoc """
@@ -43,16 +44,16 @@ defmodule DdDataStreams.Pathway do
           edge_latency: non_neg_integer()
         }
 
-  defstruct hash: 0, pathway_start: 0, edge_start: 0
+  defstruct hash: 0, pathway_start: 0, edge_start: 0, extractor: nil
 
   @doc """
   Builds a pathway from the given fields, defaulting missing ones to zero.
 
       iex> DdDataStreams.Pathway.new(hash: 234)
-      %DdDataStreams.Pathway{hash: 234, pathway_start: 0, edge_start: 0}
+      %DdDataStreams.Pathway{hash: 234, pathway_start: 0, edge_start: 0, extractor: nil}
 
       iex> DdDataStreams.Pathway.new(edge_start: 1700003600000)
-      %DdDataStreams.Pathway{hash: 0, pathway_start: 0, edge_start: 1700003600000}
+      %DdDataStreams.Pathway{hash: 0, pathway_start: 0, edge_start: 1700003600000, extractor: nil}
   """
   @spec new(keyword() | map()) :: t()
   def new(fields) do
@@ -61,7 +62,8 @@ defmodule DdDataStreams.Pathway do
     %__MODULE__{
       hash: Map.get(fields, :hash, 0),
       pathway_start: Map.get(fields, :pathway_start, 0),
-      edge_start: Map.get(fields, :edge_start, 0)
+      edge_start: Map.get(fields, :edge_start, 0),
+      extractor: Map.get(fields, :extractor, nil)
     }
   end
 
