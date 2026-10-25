@@ -152,7 +152,9 @@ defmodule DdDataStreams do
 
   Returns `nil` when the extractor finds no edge in the metadata - a message
   with no subscription, no topic, nothing to report it under - and records
-  nothing in that case. An extractor that raises is treated the same way, and
+  nothing in that case. It also clears the process context, so a later
+  `produce/3` cannot chain onto the previous message's pathway. An extractor
+  that raises is treated the same way, and
   the reason is logged and reported as a `[:dd_data_streams, :handler, :error]`
   telemetry event. Otherwise returns the pathway the checkpoint reached and the
   checkpoint itself, with its payload size, for an application that wants to
@@ -163,6 +165,7 @@ defmodule DdDataStreams do
   def consume(%{data: _, metadata: _} = message) do
     case checkpointed(message) do
       nil ->
+        Context.clear()
         nil
 
       {extractor, {pathway, checkpoint}} ->
@@ -173,7 +176,10 @@ defmodule DdDataStreams do
     end
   end
 
-  def consume(_message), do: nil
+  def consume(_message) do
+    Context.clear()
+    nil
+  end
 
   @doc """
   Records the produce checkpoint for `data` published to `topic` and returns the
