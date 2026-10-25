@@ -13,8 +13,17 @@ if Code.ensure_loaded?(Req) do
     @impl true
     def post(url, headers, body) do
       # The agent connection is best effort and the caller drops the bucket on
-      # failure, so a retry here would only delay the next flush.
-      case Req.post(url, headers: headers, body: IO.iodata_to_binary(body), retry: false) do
+      # failure, so a retry here would only delay the next flush. The timeouts
+      # keep a blackholed agent from blocking aggregation indefinitely.
+      case Req.post(
+             url,
+             headers: headers,
+             body: IO.iodata_to_binary(body),
+             retry: false,
+             connect_options: [timeout: 2_000],
+             receive_timeout: 5_000,
+             request_timeout: 10_000
+           ) do
         {:ok, %Req.Response{status: status}} -> {:ok, status}
         {:error, reason} -> {:error, reason}
       end

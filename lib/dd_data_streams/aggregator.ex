@@ -18,9 +18,9 @@ defmodule DdDataStreams.Aggregator do
 
   `flush/0` sends the buckets that are complete, meaning their start is not
   newer than ten seconds ago, and keeps the bucket still being filled. A bucket
-  is removed before it is sent, so a failed send drops it: it is logged and
-  counted in `[:dd_data_streams, :flush, :error]` telemetry with a `count`
-  measurement, and nothing is raised. Stopping the process sends everything,
+  is removed before it is sent, so a failed send drops it: it is counted in
+  `[:dd_data_streams, :flush, :error]` telemetry with a `count` measurement,
+  and nothing is raised. Stopping the process sends everything,
   including the partial bucket, unless the agent has not answered within ten
   seconds, in which case the send is abandoned and the node keeps shutting
   down.
@@ -30,13 +30,11 @@ defmodule DdDataStreams.Aggregator do
   either applies to the next one.
 
   A checkpoint that cannot be aggregated is dropped instead of counted: it is
-  logged and reported in `[:dd_data_streams, :checkpoint, :invalid]` telemetry
-  with a `count` measurement, and nothing is raised.
+  reported in `[:dd_data_streams, :checkpoint, :invalid]` telemetry with a
+  `count` measurement, and nothing is raised.
   """
 
   use GenServer
-
-  require Logger
 
   alias DdDataStreams.Config
   alias DdDataStreams.Payload
@@ -101,14 +99,16 @@ defmodule DdDataStreams.Aggregator do
   @doc """
   Sends every bucket that is complete, dropping each one before it is sent.
 
-  Returns once the sends have finished, whether or not they succeeded.
+  Returns once the sends have finished, whether or not they succeeded. The wait
+  is bounded by the transport's own timeouts; the default transport aborts a
+  request after ten seconds.
   """
   @spec flush() :: :ok
   def flush do
     case Process.whereis(__MODULE__) do
       nil -> :ok
-      # The transport may take longer than the default five seconds, and the
-      # caller waits for the sends either way.
+      # The transport enforces its own timeouts; the caller waits for the sends
+      # either way.
       pid -> GenServer.call(pid, :flush, :infinity)
     end
   end
@@ -345,18 +345,12 @@ defmodule DdDataStreams.Aggregator do
   end
 
   defp failed(service, reason) do
-    Logger.warning(
-      "dropped pipeline stats of #{service} after a failed flush: #{inspect(reason)}"
-    )
-
     :telemetry.execute(@error_event, %{count: 1}, %{service: service, reason: reason})
 
     :ok
   end
 
   defp invalid(service, checkpoint) do
-    Logger.warning("dropped a malformed checkpoint of #{service}: #{inspect(checkpoint)}")
-
     :telemetry.execute(@invalid_event, %{count: 1}, %{service: service, checkpoint: checkpoint})
 
     :ok

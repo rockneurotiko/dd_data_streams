@@ -10,6 +10,11 @@ defmodule DdDataStreams.Transport do
   endpoint and reports the HTTP status, or the reason the request did not
   complete. The agent adds the API key itself, so no authentication header is
   passed.
+
+  `post/3` must return promptly: the aggregator waits for it while handling
+  casts and flushes, so a transport that never returns blocks aggregation and
+  lets the mailbox grow. A transport is expected to enforce its own connect,
+  receive and request timeouts.
   """
 
   @doc """
