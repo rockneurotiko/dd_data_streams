@@ -188,4 +188,74 @@ defmodule DdDataStreams.CheckpointsTest do
       native(header.edge_start + 1)
     )
   end
+
+  defp sqs_message(json, opts \\ []) do
+    %{
+      data: Keyword.get(opts, :data, "hello"),
+      message_attributes: %{
+        "_datadog" => %{
+          name: "_datadog",
+          data_type: "String",
+          string_value: json,
+          binary_value: "",
+          value: json
+        }
+      },
+      ordering_key: Keyword.get(opts, :ordering_key, "customer-1")
+    }
+  end
+
+  test "consume reads a pathway from SQS _datadog message attributes" do
+    header = reference_header()
+    json = IO.iodata_to_binary(:json.encode(%{"dd-pathway-ctx-base64" => header.base64}))
+    received_ms = header.edge_start + 42
+
+    {pathway, checkpoint} =
+      Checkpoints.consume(sqs_message(json), @consume_tags, native(received_ms))
+
+    assert checkpoint.parent_hash == header.hash
+    assert checkpoint.hash == consume_hash(header.hash)
+    assert checkpoint.timestamp == received_ms
+    assert checkpoint.edge_latency == 42
+    assert checkpoint.payload_size == 5 + byte_size(json) + 10
+
+    assert pathway.hash == checkpoint.hash
+    assert pathway.pathway_start == header.pathway_start
+  end
+
+  test "consume leaves an SQS message without _datadog on a new pathway" do
+    received_ms = 1_780_345_623_738
+
+    {pathway, checkpoint} =
+      Checkpoints.consume(
+        %{data: "hello", message_attributes: %{}, ordering_key: "customer-1"},
+        @consume_tags,
+        native(received_ms)
+      )
+
+    assert checkpoint.parent_hash == 0
+    assert checkpoint.payload_size == 5 + 0 + 10
+    assert pathway.pathway_start == received_ms
+  end
+
+  test "Carrier.Sqs round-trips the pathway through _datadog" do
+    alias DdDataStreams.Carrier.Sqs
+
+    pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+    key = "dd-pathway-ctx-base64"
+
+    carrier = %{
+      "_datadog" => %{
+        name: "_datadog",
+        data_type: "String",
+        string_value: "{}",
+        binary_value: "",
+        value: "{}"
+      }
+    }
+
+    updated = Sqs.put(carrier, pathway, key)
+    assert Sqs.get(updated, key) == pathway
+    assert Sqs.size(updated) > 0
+  end
 end

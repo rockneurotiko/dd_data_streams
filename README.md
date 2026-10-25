@@ -43,6 +43,9 @@ an application can list several to run pipelines on more than one bus at once.
 * `DdDataStreams.Propagator`: the pathway header codec (default key
   `dd-pathway-ctx-base64`), byte compatible with the official Datadog tracers,
   over an attribute map or a header list.
+* `DdDataStreams.Carrier`: broker-specific carriers for the pathway header.
+  `Flat` handles attribute maps and header lists; `Sqs` unwraps the `_datadog`
+  JSON message attribute BroadwaySQS exposes.
 * `DdDataStreams.Aggregator`: a GenServer that buckets checkpoints and flushes
   them to the Agent every ten seconds.
 * `DdDataStreams.Payload` and `DdDataStreams.Sketch`: the StatsPayload MsgPack
@@ -53,6 +56,21 @@ an application can list several to run pipelines on more than one bus at once.
   configure the library.
 * `DdDataStreams.Transport`: the behaviour for posting to the Agent, with a Req
   implementation as the default.
+
+## SQS wrapping
+
+For SQS, BroadwaySQS exposes the pathway under the `_datadog` message
+attribute as a JSON object. `DdDataStreams.Carrier.Sqs` unwraps that JSON to
+read the pathway and merges a produced header into it, so a producer wraps the
+`{key, value}` pair returned by `DdDataStreams.produce/3` into the `_datadog`
+attribute's JSON rather than adding it as a separate attribute:
+
+```elixir
+attributes = case DdDataStreams.produce("orders", data) do
+  {key, value} -> %{"_datadog" => Jason.encode!(%{key => value})}
+  nil -> %{}
+end
+```
 
 ## Installation
 

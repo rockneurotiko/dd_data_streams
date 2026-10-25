@@ -25,6 +25,9 @@ defmodule DdDataStreams.Checkpoints do
     * `:headers` - the message headers, as a list of `{key, value}` pairs, for a
       producer that exposes headers instead of attributes; used when
       `:attributes` is absent
+    * `:message_attributes` - the SQS message attributes, as the map
+      BroadwaySQS exposes under `message.metadata.message_attributes`; the
+      pathway is read from its `_datadog` JSON attribute
     * `:ordering_key` - the ordering key, `nil` or `""` when it is unset
 
   These are the values `BroadwayCloudPubSub` v2 exposes as `message.data`,
@@ -74,7 +77,7 @@ defmodule DdDataStreams.Checkpoints do
   chaining produce edges onto each other.
   """
 
-  alias DdDataStreams.{Config, Pathway, Propagator}
+  alias DdDataStreams.{Carrier, Config, Pathway}
 
   @type message :: %{
           required(:data) => binary(),
@@ -100,7 +103,7 @@ defmodule DdDataStreams.Checkpoints do
   def consume(%{data: _} = message, tags, received_at)
       when is_list(tags) and is_integer(received_at) do
     {_field, carrier} = carrier(message)
-    pathway = Propagator.get(carrier, Config.header()) || Pathway.new(%{})
+    pathway = Carrier.get(carrier, Config.header()) || Pathway.new(%{})
 
     {pathway, checkpoint} =
       Pathway.set_checkpoint(pathway, tags,
@@ -160,30 +163,28 @@ defmodule DdDataStreams.Checkpoints do
   # Kafka pipeline reads its header list back and a Pub/Sub pipeline its map.
   # A message with neither, or with attributes of a shape the library cannot
   # read, is read as an empty attributes map.
-  @spec carrier(message()) :: {:attributes | :headers, map() | [tuple()]}
-  defp carrier(%{headers: headers}) when is_list(headers), do: {:headers, headers}
-  defp carrier(%{attributes: attributes}) when is_map(attributes), do: {:attributes, attributes}
-  defp carrier(%{attributes: attributes}) when is_list(attributes), do: {:attributes, attributes}
-  defp carrier(_message), do: {:attributes, %{}}
+  @spec carrier(message()) :: {:attributes | :headers | :message_attributes, map() | [tuple()]}
+  @doc false
+  def carrier(%{headers: headers}) when is_list(headers), do: {:headers, headers}
+
+  def carrier(%{message_attributes: attributes}) when is_map(attributes),
+    do: {:message_attributes, attributes}
+
+  def carrier(%{message_attributes: attributes}) when is_list(attributes),
+    do: {:message_attributes, attributes}
+
+  def carrier(%{attributes: attributes}) when is_map(attributes), do: {:attributes, attributes}
+  def carrier(%{attributes: attributes}) when is_list(attributes), do: {:attributes, attributes}
+  def carrier(_message), do: {:attributes, %{}}
 
   @spec payload_size(message()) :: non_neg_integer()
   defp payload_size(message) do
     {_field, carrier} = carrier(message)
-    data_size = bytes(Map.get(message, :data))
-    ordering_key_size = bytes(Map.get(message, :ordering_key))
 
-    Enum.reduce(carrier, data_size + ordering_key_size, fn entry, size ->
-      size + entry_size(entry)
-    end)
+    bytes(Map.get(message, :data)) +
+      bytes(Map.get(message, :ordering_key)) +
+      Carrier.size(carrier)
   end
-
-  # A broker may carry other fields alongside the key and the value; every
-  # element of the entry counts towards the payload.
-  defp entry_size(entry) when tuple_size(entry) >= 2 do
-    entry |> Tuple.to_list() |> Enum.reduce(0, fn element, size -> size + bytes(element) end)
-  end
-
-  defp entry_size(_entry), do: 0
 
   # Attributes reach this library from a broker, so a value that is not a
   # string is measured as zero rather than crashing the pipeline.

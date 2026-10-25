@@ -267,11 +267,18 @@ defmodule DdDataStreams.PropagatorTest do
     assert Propagator.get(%{"dd-pathway-ctx" => raw}) == pathway
     assert Propagator.get([{"dd-pathway-ctx", raw}]) == pathway
     assert Propagator.get([{"dd-pathway-ctx", :binary, raw}]) == pathway
-    assert Propagator.get([{"traceparent", "00-abc"}, {"dd-pathway-ctx", :longstr, raw}]) == pathway
+
+    assert Propagator.get([{"traceparent", "00-abc"}, {"dd-pathway-ctx", :longstr, raw}]) ==
+             pathway
   end
 
   test "configured base64 header wins over legacy binary header" do
-    configured = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+    configured = %Pathway{
+      hash: 234,
+      pathway_start: 1_700_000_000_000,
+      edge_start: 1_700_003_600_000
+    }
+
     legacy = %Pathway{hash: 999, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
 
     attributes = %{
