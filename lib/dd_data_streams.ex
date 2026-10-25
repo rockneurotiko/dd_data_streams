@@ -196,9 +196,12 @@ defmodule DdDataStreams do
   change the context.
 
   `data` is the outgoing payload. It is only measured, never inspected: a binary
-  is measured with `byte_size/1`, and anything else counts as zero. Pass
-  `payload_size:` when the payload's size is known another way, or when the
-  message's own attributes should be counted.
+  is measured with `byte_size/1`, and anything else counts as zero. The size of
+  the `{key, value}` pair this function returns is added to it, because that
+  pair travels with the message and the consumer measures every attribute it
+  receives: measure the message without the pair. Pass `payload_size:` when the
+  payload's size is known another way, or when the message's own attributes
+  should be counted.
 
   Call it immediately before sending: the checkpoint is recorded when this
   function runs, so a send that never happens still reports a produce.
@@ -222,24 +225,24 @@ defmodule DdDataStreams do
       configured one; a stage that produces without consuming and has several
       extractors must pass it.
     * `:payload_size` - the size in bytes to report, a non-negative integer.
-      Defaults to the size of `data`.
+      Defaults to the size of `data`. The pair this function returns is added to
+      it, so pass the size of the message without that pair.
 
   Returns `nil` when the library is disabled, and records nothing.
   """
   @spec produce(String.t(), term(), keyword()) :: propagation() | nil
   def produce(topic, data, opts \\ []) when is_binary(topic) do
     if Config.enabled?() do
-      payload_size = payload_size(data, opts)
-
       {pathway, checkpoint} =
         Checkpoints.produce(
           produce_tags(topic, opts),
           Context.get() || Pathway.new(%{}),
-          payload_size
+          payload_size(data, opts)
         )
 
-      Aggregator.add(checkpoint)
-      {Config.header(), Propagator.encode_str(pathway)}
+      pair = {Config.header(), Propagator.encode_str(pathway)}
+      Aggregator.add(%{checkpoint | payload_size: checkpoint.payload_size + header_size(pair)})
+      pair
     end
   end
 
@@ -265,9 +268,10 @@ defmodule DdDataStreams do
   is any `Enumerable`; it is materialised once. An empty enumerable returns
   `[]`; a disabled library returns `nil`.
 
-  Payload size is `byte_size/1` per binary payload, or zero otherwise. There is
-  no `:payload_size` option here: call `produce/3` once per message when each
-  size needs to be measured differently.
+  Payload size is `byte_size/1` per binary payload, or zero otherwise, plus the
+  size of the pair this function returns, as `produce/3` does. There is no
+  `:payload_size` option here: call `produce/3` once per message when each size
+  needs to be measured differently.
 
   The `:extractor` option is the same as for `produce/3`. Call it immediately
   before the batch send, for the same reason as `produce/3`.
@@ -477,11 +481,13 @@ defmodule DdDataStreams do
         0
       )
 
+    pair = {Config.header(), Propagator.encode_str(pathway)}
+
     Enum.each(datas, fn data ->
-      Aggregator.add(%{checkpoint | payload_size: bytes(data)})
+      Aggregator.add(%{checkpoint | payload_size: bytes(data) + header_size(pair)})
     end)
 
-    {Config.header(), Propagator.encode_str(pathway)}
+    pair
   end
 
   defp payload_size(data, opts) do
@@ -502,6 +508,11 @@ defmodule DdDataStreams do
   # as zero rather than crashing the send path.
   defp bytes(data) when is_binary(data), do: byte_size(data)
   defp bytes(_data), do: 0
+
+  # The pathway pair goes out with the message and the consume side measures
+  # every attribute it arrives with, so the produce side counts the pair it is
+  # about to send and both sides of one edge measure the same message.
+  defp header_size({key, value}), do: byte_size(key) + byte_size(value)
 
   defp extractors do
     Application.get_env(:dd_data_streams, @extractors_key, @default_extractors)

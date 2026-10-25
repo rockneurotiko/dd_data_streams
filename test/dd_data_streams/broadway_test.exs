@@ -133,7 +133,8 @@ defmodule DdDataStreams.BroadwayTest do
     assert produced.tags == @produce_tags
     assert produced.parent_hash == consumed.hash
     assert produced.hash == produce_hash(consumed.hash)
-    assert produced.payload_size == 5
+    # data 5 bytes + the injected header key and value.
+    assert produced.payload_size == 5 + byte_size(key) + byte_size(value)
 
     # Decoding the returned value reads this library's own encoding; the hash it
     # has to carry is the one derived above from Pathway.node_hash/4.
@@ -144,13 +145,36 @@ defmodule DdDataStreams.BroadwayTest do
     assert pathway_start == header.pathway_start
   end
 
+  test "both sides of one edge measure the same payload" do
+    assert :ok = DdDataStreams.attach()
+
+    {key, value} = DdDataStreams.produce("orders", "hello")
+    assert_receive {:checkpoint, produced}
+
+    # What the receiving pipeline gets: the data and the header this library
+    # injected, neither an ordering key nor another attribute.
+    consume_event(%{
+      data: "hello",
+      metadata: %{
+        attributes: %{key => value},
+        subscription: @subscription,
+        received_at: native(1)
+      }
+    })
+
+    assert_receive {:checkpoint, consumed}
+    assert consumed.parent_hash == produced.hash
+    assert consumed.payload_size == produced.payload_size
+  end
+
   test "produce reports a payload size given in the options" do
     assert :ok = DdDataStreams.attach()
 
-    assert {_key, value} = DdDataStreams.produce("orders", "hello", payload_size: 42)
+    assert {key, value} = DdDataStreams.produce("orders", "hello", payload_size: 42)
 
     assert_receive {:checkpoint, checkpoint}
-    assert checkpoint.payload_size == 42
+    # The given size plus the injected header key and value.
+    assert checkpoint.payload_size == 42 + byte_size(key) + byte_size(value)
     assert {:ok, _pathway} = Propagator.decode_str(value)
   end
 
@@ -253,7 +277,15 @@ defmodule DdDataStreams.BroadwayTest do
 
     assert Enum.all?(produced, &(&1.parent_hash == consumed.hash))
     assert Enum.all?(produced, &(&1.hash == hash))
-    assert produced |> Enum.map(& &1.payload_size) |> Enum.sort() == [3, 3, 5]
+    # Each payload plus the header the whole batch is published with.
+    header = byte_size(key) + byte_size(value)
+
+    assert produced |> Enum.map(& &1.payload_size) |> Enum.sort() == [
+             3 + header,
+             3 + header,
+             5 + header
+           ]
+
     assert produced |> Enum.map(& &1.timestamp) |> Enum.uniq() |> length() == 1
   end
 
@@ -370,7 +402,10 @@ defmodule DdDataStreams.BroadwayTest do
 
     messages =
       for partition <- 1..2 do
-        %{data: "hello", metadata: %{topic: "orders", headers: [], ts: 1, partition: partition}}
+        %{
+          data: "hello",
+          metadata: %{topic: "orders", headers: [], ts: 1_700_000_000_000, partition: partition}
+        }
       end
 
     Enum.each(messages, &consume_event/1)

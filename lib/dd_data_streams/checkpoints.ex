@@ -46,9 +46,11 @@ defmodule DdDataStreams.Checkpoints do
   the pathway is read, so it includes the inbound header (about 49 bytes).
 
   The produce size is the caller's: `DdDataStreams.produce/3` passes the
-  `:payload_size` option when given, or the size of `data` otherwise. The
-  pathway header written by the caller is not part of it, so the produce size
-  is not inflated by this library.
+  `:payload_size` option when given, or the size of `data` otherwise, and adds
+  the size of the pathway header it is about to write - the configured key plus
+  the encoded value - so a produce measures the same message the consume side
+  measures. A caller that measures its message itself measures it without that
+  header.
 
   ## Latency
 
@@ -121,8 +123,9 @@ defmodule DdDataStreams.Checkpoints do
 
   `pathway` is the pathway the produce continues: the one `consume/3` returned
   for a message received earlier, or a new pathway when there is none. The
-  checkpoint's `:payload_size` is `payload_size`, which the caller measures
-  before the pathway header is written.
+  checkpoint's `:payload_size` is `payload_size`, which the caller measures on
+  the message it sends; `DdDataStreams.produce/3` adds the size of the pathway
+  header it writes on top, so here too the message is measured without it.
 
   This function records nothing and encodes nothing. Hand the checkpoint to
   `DdDataStreams.Aggregator.add/1`, encode the returned pathway with the
