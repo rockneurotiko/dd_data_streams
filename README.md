@@ -515,14 +515,22 @@ config :dd_data_streams,
   transport: MyApp.AgentTransport
 ```
 
-The identity (`service`, `env`, `version`, `primary_tag`) is read per
-checkpoint, the agent URL and the transport on every flush, the header on every
-produce and consume call, and the extractors on every attach, produce and
-consume call, so changing any of them at runtime with `Application.put_env/3`
-or `System.put_env/2` affects the next use. When
-the transport key is absent, `DdDataStreams.Transport.Req` is used if Req is
-available. The one thing a runtime change cannot do is start or stop the
-aggregator; see below.
+When each setting is read:
+
+| Setting | Read when |
+|---|---|
+| `enabled` | at attach, produce and consume time, and once when the application starts (for the aggregator) |
+| `service`, `env`, `primary_tag` | per checkpoint; `service` and `env` again when building the payload |
+| `version` | when building the payload (on flush) |
+| `header` | on every produce and consume call |
+| `extractors` | on attach, on every consume, and on produce only as a fallback |
+| `agent_url`, `agent_host`, `agent_port` | on every flush |
+| `transport` | on every flush, and once when the application starts (for the default) |
+
+So changing any of them at runtime with `Application.put_env/3` or
+`System.put_env/2` affects the next use, except that a runtime change cannot
+start or stop the aggregator; see below. When the transport key is absent,
+`DdDataStreams.Transport.Req` is used if Req is available.
 
 ### Turning it off
 

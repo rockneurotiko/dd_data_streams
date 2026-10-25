@@ -16,27 +16,32 @@ defmodule DdDataStreams.Config do
   nothing else, so it is on once you depend on it and `DD_DATA_STREAMS_ENABLED`
   is a kill switch.
 
-  That the value is read late does not mean every use of it changes at runtime;
-  some are decided once per process:
+  When each setting is read (see also the README table):
 
-    * `service/0`, `env/0`, `version/0`, `primary_tag/0`, `header/0` and
-      `enabled?/0` are read per call, so `DdDataStreams.attach/0`,
-      `DdDataStreams.produce/3` and `DdDataStreams.checkpoint/2` follow them.
-      The aggregator is started by
-      `DdDataStreams.Application` from `enabled?/0` when the application starts
-      and keeps that answer: turning the flag on afterwards installs handlers
-      that record checkpoints into an aggregator that is not running, and
-      `DdDataStreams.Aggregator.add/1` drops every one in silence; turning it
-      off afterwards stops header injection and further handler installation,
-      but handlers installed earlier stay attached and keep recording into the
-      aggregator that is still running. Restart the application to change
-      whether the aggregator runs.
-    * `agent_url/1` and `transport/0` are read on every flush, so changing
-      either at runtime moves the next payload - including for an aggregator
-      that another application supervises.
-    * an application that does not depend on the optional Req brings no default
-      transport: the aggregator starts with none, the start logs an error naming
-      the missing configuration, and every flush is dropped.
+    * `enabled?/0` - on attach, produce and consume, and once at application
+      start for the aggregator, which then keeps that answer.
+    * `service/0`, `env/0`, `primary_tag/0` - per checkpoint; `service/0` and
+      `env/0` again when building the payload.
+    * `version/0` - when building the payload, on flush.
+    * `header/0` - on every produce and consume call.
+    * `extractors/0` (via `DdDataStreams.extractors/0`) - on attach, on every
+      consume, and on produce only as a fallback.
+    * `agent_url/1`, `agent_host/0`, `agent_port/0` - on every flush.
+    * `transport/0` - on every flush, and once at application start for the
+      default.
+
+  The aggregator is started by `DdDataStreams.Application` from `enabled?/0`
+  when the application starts and keeps that answer: turning the flag on
+  afterwards installs handlers that record checkpoints into an aggregator that
+  is not running, and `DdDataStreams.Aggregator.add/1` drops every one in
+  silence; turning it off afterwards stops header injection and further handler
+  installation, but handlers installed earlier stay attached and keep recording
+  into the aggregator that is still running. Restart the application to change
+  whether the aggregator runs.
+
+  An application that does not depend on the optional Req brings no default
+  transport: the aggregator starts with none, the start logs an error naming
+  the missing configuration, and every flush is dropped.
 
   `agent_url/1` takes the environment as an argument because it is also asked
   for outside the VM's environment, from tests and from a custom transport; the
