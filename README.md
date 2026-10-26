@@ -188,6 +188,15 @@ producer's pathway value when it is present. In `handle_message/3`, answer with
 defmodule MyApp.Pipeline do
   use Broadway
 
+  def start_link(_opts) do
+    Broadway.start_link(__MODULE__,
+      name: __MODULE__,
+      producer: [module: {MyApp.Source, []}],
+      processors: [default: []],
+      batchers: [default: [batch_size: 20, batch_timeout: 100]]
+    )
+  end
+
   def handle_message(_processor, message, _context) do
     data = Jason.encode!(handle(message.data))
 
@@ -201,6 +210,10 @@ defmodule MyApp.Pipeline do
 
     MyApp.PubSub.publish("orders-out", data, attributes: attributes)
     message
+  end
+
+  def handle_batch(_batcher, messages, _batch_info, _context) do
+    messages
   end
 end
 ```
@@ -443,7 +456,7 @@ In `handle_batch/4`, the context holds one pathway sampled from the batch.
 the whole batch, so one send can answer the whole batch:
 
 ```elixir
-def handle_batch(_processor, messages, _batch_info, _context) do
+def handle_batch(_batcher, messages, _batch_info, _context) do
   payloads = Enum.map(messages, &encode(&1.data))
 
   attributes = existing_attributes
@@ -458,6 +471,14 @@ def handle_batch(_processor, messages, _batch_info, _context) do
   messages
 end
 ```
+
+The minimal batchers configuration is
+`batchers: [default: [batch_size: 20, batch_timeout: 100]]`. Broadway builds
+no batch stages without it, so `handle_batch/4` runs only when `batchers:` is
+configured. Return every message you were given: Broadway logs an error when
+the returned list does not match, and a message left out is never
+acknowledged. When the batch's merged fan-in leaves no pathway, the next
+produce starts a fresh one.
 
 `produce_batch/3` returns `[]` for an empty batch; both functions return `nil`
 when the library is disabled, so the call site needs no guard beyond that.
