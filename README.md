@@ -721,9 +721,10 @@ uses a per-test id of its own, so it never collides either.
 
 Edge tags come from the extractor. The Pub/Sub one reports a consume edge as
 `direction:in`, `subscription:<subscription>`, `type:google-pubsub` and a produce
-edge as `direction:out`, `topic:<topic>`, `type:google-pubsub`. The subscription
-is used verbatim, so a short name and a
-`projects/<project>/subscriptions/<id>` resource name stay distinguishable.
+edge as `direction:out`, `topic:<topic>`, `type:google-pubsub`. Pub/Sub names
+subscriptions and topics as full resource names
+(`projects/<project>/subscriptions/<id>`); the extractor reduces each to its
+short id, and an already-short name is reported as it is.
 
 `type:` is the queueing technology Datadog files the stream under, and it is
 hashed into every node, so it has to be the same for every service in a pipeline,
@@ -862,13 +863,14 @@ DDSketch bins use the same mapping as dd-trace-go v2.11.2 and
   self-describing in the payload; dd-trace-py uses offset 1338.5, so its bins do
   not line up with Go/Java.
 
-For the Pub/Sub extractor there are two known naming differences: dd-trace-py
+For the Pub/Sub extractor there is one known naming difference: dd-trace-py
 tags a consume edge with `topic:<subscription>` instead of
-`subscription:<subscription>`, and dd-trace-java reduces a subscription resource
-name to its id. Both change the node's identity, so those consumers appear as a
+`subscription:<subscription>`, and reports the full resource path rather than
+the short id. Both change the node's identity, so a Py consumer appears as a
 different node rather than joining the one reported here; the pathway itself
 still connects, because the link between two nodes is the hash carried on the
-message.
+message. dd-trace-java reduces the resource name to its short id on both the
+subscription and the topic, which is what this library reports.
 
 ### Node hash
 

@@ -151,9 +151,9 @@ defmodule DdDataStreams.PubSubEmulatorTest do
     assert [%{"ackId" => ack_id, "message" => message}] = pull(names.in_subscription)
 
     # What BroadwayCloudPubSub v2 hands a processor: the broker's attributes and
-    # ordering key, the subscription the producer was configured with (used
-    # verbatim as a resource name), the receive time in native units, and the
-    # broker's own identifiers.
+    # ordering key, the subscription the producer was configured with (as the
+    # full resource name), the receive time in native units, and the broker's
+    # own identifiers.
     received_ms = @header.edge_start + @consume_latency_ms
 
     metadata = %{
@@ -184,7 +184,7 @@ defmodule DdDataStreams.PubSubEmulatorTest do
 
     assert checkpoint.tags == [
              "direction:in",
-             "subscription:projects/#{@project}/subscriptions/#{names.in_subscription}",
+             "subscription:#{names.in_subscription}",
              "type:google-pubsub"
            ]
 
@@ -233,7 +233,7 @@ defmodule DdDataStreams.PubSubEmulatorTest do
 
     assert String.contains?(
              payload,
-             "subscription:projects/#{@project}/subscriptions/#{names.in_subscription}"
+             "subscription:#{names.in_subscription}"
            )
 
     assert String.contains?(payload, "topic:#{names.out_topic}")

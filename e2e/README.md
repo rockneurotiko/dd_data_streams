@@ -149,7 +149,7 @@ product_mask: 2
 buckets: 3
 
 bucket start=1700000000000000000 duration=10000000000
-  tags=['direction:in', 'subscription:projects/dsm-test/subscriptions/e2e-sub-...', 'type:google-pubsub'] hash=2940366034965408889 parent_hash=234 timestamp_type=origin samples={'pathway': 2, 'edge': 2, 'payload': 2}
+  tags=['direction:in', 'subscription:e2e-sub-...', 'type:google-pubsub'] hash=2940366034965408889 parent_hash=234 timestamp_type=origin samples={'pathway': 2, 'edge': 2, 'payload': 2}
   tags=['direction:out', 'topic:out-topic-...', 'type:google-pubsub'] hash=9477037086134454152 parent_hash=2940366034965408889 timestamp_type=origin ...
 ```
 

@@ -23,6 +23,9 @@ defmodule DdDataStreams.BroadwayTest do
   @service "checkout"
   @env "prod"
   @subscription "orders-sub"
+  # BroadwayCloudPubSub v2 stamps the subscription as its full resource name;
+  # the extractor reduces it to the short id the tags below carry.
+  @subscription_resource "projects/dsm-test/subscriptions/#{@subscription}"
 
   @consume_tags ["direction:in", "subscription:orders-sub", "type:google-pubsub"]
   @produce_tags ["direction:out", "topic:orders", "type:google-pubsub"]
@@ -746,7 +749,7 @@ defmodule DdDataStreams.BroadwayTest do
     [
       attributes: attributes,
       orderingKey: "customer-1",
-      subscription: @subscription,
+      subscription: @subscription_resource,
       received_at: native(1_780_345_623_738)
     ]
     |> Keyword.merge(metadata)

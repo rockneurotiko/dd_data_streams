@@ -253,8 +253,12 @@ defmodule E2e.Verify do
   end
 
   defp consume_tags(subscription) do
-    ["direction:in", "subscription:" <> subscription, "type:google-pubsub"]
+    ["direction:in", "subscription:" <> short_id(subscription), "type:google-pubsub"]
   end
+
+  # The Pub/Sub extractor reports the short id, the last segment of the
+  # resource name the subscription metadata carries.
+  defp short_id(resource), do: resource |> String.split("/") |> List.last()
 
   defp produce_tags(topic) do
     ["direction:out", "topic:" <> topic, "type:google-pubsub"]
