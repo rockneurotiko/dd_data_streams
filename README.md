@@ -408,7 +408,7 @@ the returned list does not match, and a message left out is never
 acknowledged. When the batch's merged fan-in leaves no pathway, the next
 produce starts a fresh one.
 
-`produce_batch/3` returns `[]` for an empty batch; both functions return `nil`
+`produce_batch/3` returns `[]` for an empty batch; both functions return `[]`
 when the library is disabled, so the call site needs no guard beyond that.
 
 ### Without Broadway
