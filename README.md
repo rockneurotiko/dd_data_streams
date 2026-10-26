@@ -761,6 +761,11 @@ Every tag from the extractor is reported. What the vocabulary of
 Any other key is reported as it is: it hashes into no node and splits no
 statistics.
 
+A tag is always a `key:value` string. A tag that is not a string carries no
+key and no value, so `checkpoint/1,2` rejects it at the boundary, the
+extractors filter it out of a message's tags, and the aggregator drops any
+that reach it before the flush.
+
 A produce measured for one topic is one node even when the messages are spread
 over partitions, which is what lets downstream produce edges join up.
 

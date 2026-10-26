@@ -16,6 +16,11 @@ defmodule DdDataStreams.Tags do
   the edge like any other, it takes part in no node's hash and it splits no
   node's statistics. Only `filter/2` is selective, and only about the `:hash`
   and `:aggregation` tiers.
+
+  A tag is always a string. A tag that is not a binary carries no key and no
+  value, so `DdDataStreams.checkpoint/1,2` rejects it at the boundary, the
+  extractors filter it out of a message's tags, and the aggregator drops any
+  that reach it before the flush.
   """
 
   @hash_tags ~w(bus direction exchange topic type subscription kafka_cluster_id)
