@@ -28,9 +28,10 @@ defmodule DdDataStreams.Payload do
 
   @version Mix.Project.config()[:version]
 
-  # DSM is bit 1 of the product mask. The Go and Java tracers also set the APM
-  # bit; the intake honours either.
-  @product_mask 2
+  # APM | DSM, the mask dd-trace-go v2.11.2 flushes in internal/datastreams and
+  # dd-trace-java 1.67.1 sets when DSM is enabled; dd-trace-py omits the field
+  # entirely, so the intake treats it as optional.
+  @product_mask 3
 
   @bucket_duration_ns 10_000_000_000
 

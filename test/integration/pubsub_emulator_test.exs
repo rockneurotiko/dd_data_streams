@@ -246,7 +246,12 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   defp flushed_body do
     assert_receive {:flush, url, headers, body}, 2_000
     assert String.ends_with?(url, "/v0.1/pipeline_stats")
-    assert headers == [{"content-type", "application/msgpack"}, {"content-encoding", "gzip"}]
+
+    assert headers == [
+             {"content-type", "application/msgpack"},
+             {"content-encoding", "gzip"},
+             {"datadog-meta-lang", "elixir"}
+           ]
 
     refute_receive {:flush, _, _, _}, 100
     body

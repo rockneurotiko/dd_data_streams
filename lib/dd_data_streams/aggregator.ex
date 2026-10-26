@@ -61,7 +61,13 @@ defmodule DdDataStreams.Aggregator do
   # bounded well below it: an agent that does not answer must not hold the
   # node for the whole budget.
   @shutdown_flush_ms 10_000
-  @headers [{"content-type", "application/msgpack"}, {"content-encoding", "gzip"}]
+  # Both verified publishers of this endpoint (dd-trace-go, dd-trace-py) send
+  # Datadog-Meta-Lang on the POST itself, not only in the body.
+  @headers [
+    {"content-type", "application/msgpack"},
+    {"content-encoding", "gzip"},
+    {"datadog-meta-lang", "elixir"}
+  ]
   @error_event [:dd_data_streams, :flush, :error]
   @stop_event [:dd_data_streams, :flush, :stop]
   @invalid_event [:dd_data_streams, :checkpoint, :invalid]

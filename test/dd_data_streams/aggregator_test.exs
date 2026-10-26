@@ -48,7 +48,7 @@ defmodule DdDataStreams.AggregatorTest do
   656e74a84261636b6c6f677390ac5472616e73616374696f6e73c400b85472616e7361637469
   6f6e436865636b706f696e74496473c400ad54726163657256657273696f6ea5302e312e30a4
   4c616e67a6656c69786972a756657273696f6ea5312e322e33ab50726f636573735461677390
-  ab50726f647563744d61736b02
+  ab50726f647563744d61736b03
   """
 
   # The distribution dd-trace-go writes for a zero-byte payload sample, from its
@@ -165,6 +165,7 @@ defmodule DdDataStreams.AggregatorTest do
     assert url == "http://localhost:8126/v0.1/pipeline_stats"
     assert {"content-type", "application/msgpack"} in headers
     assert {"content-encoding", "gzip"} in headers
+    assert {"datadog-meta-lang", "elixir"} in headers
     assert <<0x1F, 0x8B, _rest::binary>> = body
     assert :zlib.gunzip(body) == hex(@aggregator_payload)
   end
