@@ -156,11 +156,13 @@ defmodule DdDataStreams.PubSubEmulatorTest do
     # own identifiers.
     received_ms = @header.edge_start + @consume_latency_ms
 
+    received_at = System.convert_time_unit(received_ms, :millisecond, :native)
+
     metadata = %{
       attributes: message["attributes"],
       orderingKey: message["orderingKey"],
       subscription: "projects/#{@project}/subscriptions/#{names.in_subscription}",
-      received_at: System.convert_time_unit(received_ms, :millisecond, :native),
+      received_at: received_at,
       messageId: message["messageId"],
       publishTime: message["publishTime"],
       deliveryAttempt: nil
@@ -179,7 +181,7 @@ defmodule DdDataStreams.PubSubEmulatorTest do
       Checkpoints.consume(
         Map.put(consume_parts, :data, data),
         Enum.filter(consume_tags, &is_binary/1),
-        received_ms
+        received_at
       )
 
     assert checkpoint.tags == [

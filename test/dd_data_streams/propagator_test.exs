@@ -5,18 +5,13 @@ defmodule DdDataStreams.PropagatorTest do
 
   use Mimic
 
-  alias DdDataStreams.Aggregator
-  alias DdDataStreams.Checkpoints
   alias DdDataStreams.Pathway
   alias DdDataStreams.Propagator
-  alias DdDataStreams.Transport
 
   @key "dd-pathway-ctx-base64"
 
   # The floor of the window the decoder believes, 2000-01-01 in milliseconds.
   @epoch_floor_ms 946_684_800_000
-
-  @consume_tags ["direction:in", "subscription:orders-sub", "type:google-pubsub"]
 
   @headers Path.expand("../fixtures/propagation/headers.txt", __DIR__)
            |> File.read!()
