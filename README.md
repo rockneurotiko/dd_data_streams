@@ -348,6 +348,11 @@ key and the receive time, which is everything a checkpoint needs. A message that
 carries no subscription records no consume checkpoint, because there is no name
 to report it under.
 
+Consume checkpoints therefore need `broadway_cloud_pub_sub` 2.0.0-rc or newer,
+tested with 2.0.0-rc.2: stable 1.0.0 (v1) metadata carries no `:subscription`,
+so the default extractor returns `:error` for every message and a v1 pipeline
+records nothing.
+
 Another broker is one module implementing `DdDataStreams.Extractor`. Its
 moduledoc has a `BroadwayKafka` example: the same three lines of metadata
 mapping, and the `type:` Datadog files those streams under.

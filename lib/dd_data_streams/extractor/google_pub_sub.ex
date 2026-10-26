@@ -9,6 +9,11 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
   `BroadwayCloudPubSub` v1 produces - records no consume checkpoint, because
   there is no name to report its edge under.
 
+  Consume checkpoints therefore require `broadway_cloud_pub_sub` 2.0.0-rc or
+  newer, tested with 2.0.0-rc.2. On stable 1.0.0 the v1 metadata has no
+  `:subscription`, so `consume/1` returns `:error` for every message and a v1
+  pipeline records nothing.
+
   Both edges are reported as `type:google-pubsub`, the technology Datadog files
   these streams under. The produce edge names its topic with `topic:<topic>`,
   which is what dd-trace-java and dd-trace-py report for Pub/Sub.
