@@ -248,8 +248,8 @@ deployment starts a new pathway, so its edge latency is zero.
 
 - The Agent is reachable at `DD_TRACE_AGENT_URL` (or `DD_AGENT_HOST` /
   `DD_TRACE_AGENT_PORT`) and has an API key.
-- `DD_SERVICE` and `DD_ENV` are set (service defaults to
-  `unnamed-elixir-service`).
+- `DD_SERVICE` is set (defaults to `unnamed-elixir-service`); `DD_ENV` is
+  optional and an empty value is sent as-is.
 - `:req` is a dependency, or a custom `DdDataStreams.Transport` is configured.
 - `DdDataStreams.attach/0` runs once before Broadway starts.
 - The producer and consumer use the same `DdDataStreams.Config.header/0` value.
@@ -483,7 +483,7 @@ either place.
 | --- | --- | --- |
 | `DD_DATA_STREAMS_ENABLED` | unset, on | Turns the library off when it reads as false: `false`, `0`, `no`, `off`. |
 | `DD_SERVICE` | `unnamed-elixir-service` | The service name reported for this pipeline. |
-| `DD_ENV` | empty | The deployment environment. |
+| `DD_ENV` | empty | The deployment environment, sent as-is (the library does not normalize it). |
 | `DD_VERSION` | empty | The application version, reported as `Version` in the payload. |
 | `DD_PRIMARY_TAG` | empty | The primary tag, hashed into every node identity. |
 | `DD_DATA_STREAMS_HEADER` | `dd-pathway-ctx-base64` | Attribute/header key the pathway travels under; the producer and consumer must use the same value. |
@@ -625,8 +625,8 @@ one MsgPack, gzip-compressed payload per service to
 twice, in the bucket it belongs to and in the bucket that contains the start of
 its pathway, as the official tracers do; the two entries differ only in bucket
 start and timestamp type. A bucket is dropped before it is sent, so a failed
-send loses that bucket rather than growing memory; the failure is logged and
-reported through telemetry, and nothing is raised. Stopping the aggregator sends
+send loses that bucket rather than growing memory; the failure is reported via
+telemetry, and nothing is raised. Stopping the aggregator sends
 the partial bucket too, unless the agent has not answered within ten seconds,
 in which case the node keeps shutting down without it.
 
@@ -712,6 +712,17 @@ identity.
 * Fan-in is sampled, not joined: a batch that consumed several pathways
   continues exactly one of them.
 
+## Requirements and troubleshooting
+
+* The Datadog Agent must be version 7.34 or later.
+* The Agent must have an API key configured in its own config or environment;
+  the library sends none.
+* A `500` response means the Agent's forwarder is off (no API key to forward
+  with); a `4xx` means the intake rejected the payload.
+* The HTTP request is best effort and is not retried.
+* Stats are flushed about every ten seconds, so telemetry
+  (`[:dd_data_streams, :flush, :error]`) reports a failure at that cadence.
+
 ## Development
 
 ```sh
@@ -744,7 +755,7 @@ PUBSUB_EMULATOR_HOST=127.0.0.1:8085 mix test --only emulator
 
 One flushed payload posted to `<DD_TRACE_AGENT_URL>/v0.1/pipeline_stats`. The
 Agent proxies that route to the pipeline stats intake, so the status code is the
-intake's own answer: `202` means the backend accepted the schema, `500` means
+intake's own answer: `202` means the backend accepted for processing, `500` means
 the Agent has no API key to forward with, and a `4xx` means the intake rejected
 the payload. This is the tier that validates the wire format.
 
