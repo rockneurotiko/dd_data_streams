@@ -35,14 +35,19 @@ defmodule DdDataStreams.Pathway do
   @typedoc """
   The measurement a checkpoint produces. `pathway_latency` and `edge_latency`
   are in milliseconds and measure back from the checkpoint's `timestamp`.
+  `payload_size` is the byte size of the message the checkpoint was recorded
+  for; `DdDataStreams.Checkpoints.consume/3` and `produce/3` add it for
+  aggregation, while `set_checkpoint/3` leaves it out and the aggregator
+  treats an absent value as zero.
   """
   @type checkpoint :: %{
-          hash: non_neg_integer(),
-          parent_hash: non_neg_integer(),
-          tags: [String.t()],
-          timestamp: integer(),
-          pathway_latency: non_neg_integer(),
-          edge_latency: non_neg_integer()
+          required(:hash) => non_neg_integer(),
+          required(:parent_hash) => non_neg_integer(),
+          required(:tags) => [String.t()],
+          required(:timestamp) => integer(),
+          required(:pathway_latency) => non_neg_integer(),
+          required(:edge_latency) => non_neg_integer(),
+          optional(:payload_size) => non_neg_integer()
         }
 
   defstruct hash: 0,

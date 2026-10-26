@@ -37,6 +37,7 @@ defmodule DdDataStreams.Aggregator do
   use GenServer
 
   alias DdDataStreams.Config
+  alias DdDataStreams.Pathway
   alias DdDataStreams.Payload
   alias DdDataStreams.Sketch
   alias DdDataStreams.Tags
@@ -56,20 +57,6 @@ defmodule DdDataStreams.Aggregator do
   @error_event [:dd_data_streams, :flush, :error]
   @invalid_event [:dd_data_streams, :checkpoint, :invalid]
 
-  @typedoc """
-  A checkpoint with the size of the message it was recorded for, which
-  `DdDataStreams.Pathway.set_checkpoint/3` leaves out.
-  """
-  @type checkpoint :: %{
-          required(:hash) => non_neg_integer(),
-          required(:parent_hash) => non_neg_integer(),
-          required(:tags) => [String.t()],
-          required(:timestamp) => integer(),
-          required(:pathway_latency) => non_neg_integer(),
-          required(:edge_latency) => non_neg_integer(),
-          optional(:payload_size) => non_neg_integer()
-        }
-
   @doc """
   Starts the aggregator under its registered name.
 
@@ -88,7 +75,7 @@ defmodule DdDataStreams.Aggregator do
   optional `:payload_size` in bytes. Does nothing when the aggregator is not
   running, which is the case while the library is disabled.
   """
-  @spec add(checkpoint()) :: :ok
+  @spec add(Pathway.checkpoint()) :: :ok
   def add(checkpoint) when is_map(checkpoint) do
     case Process.whereis(__MODULE__) do
       nil -> :ok
