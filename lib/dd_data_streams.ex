@@ -62,7 +62,7 @@ defmodule DdDataStreams do
       leaves that in `DdDataStreams.Context`, so a produce call in
       `handle_batch/4` continues a pathway that connects to the messages being
       answered. Fan-in is a sample rather than a join, which is what
-      dd-trace-go v2.13 does in `Merge`/`MergeContexts`: it keeps one pathway.
+      dd-trace-go v2.11.2 does in `Merge`/`MergeContexts`: it keeps one pathway.
 
   Both handlers record only what each event is: the batch handler adds no
   consume checkpoint, because every message of the batch already got one at its

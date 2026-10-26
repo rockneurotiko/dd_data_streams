@@ -2,7 +2,7 @@ defmodule DdDataStreams.Aggregator do
   @moduledoc """
   Aggregates checkpoints into ten-second buckets and flushes them to the agent.
 
-  A checkpoint is counted twice, as dd-trace-go v2.13 does it: once in the bucket
+  A checkpoint is counted twice, as dd-trace-go v2.11.2 does it: once in the bucket
   that contains the checkpoint (`TimestampType: "current"`) and once in the
   bucket that contains the start of the pathway (`TimestampType: "origin"`). The
   two entries carry the same distributions; only the bucket start and the

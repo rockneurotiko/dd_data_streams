@@ -4,7 +4,7 @@ defmodule DdDataStreams.Sketch do
   that a whole distribution serialises into a compact protobuf message.
 
   Only what the datastreams wire format needs is implemented: `new/0`, `add/2`
-  and `to_proto/1`. The mapping is the one dd-trace-go v2.11.2/v2.13 and
+  and `to_proto/1`. The mapping is the one dd-trace-go v2.11.2 and
   dd-trace-java 1.67.1 emit, gamma 1.015625 with index offset
   1.8761281912861705; the mapping is self-describing in the payload (gamma and
   offset travel with it). dd-trace-py uses offset 1338.5, so its bins do not

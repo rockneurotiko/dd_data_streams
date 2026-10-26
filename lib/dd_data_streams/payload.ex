@@ -2,7 +2,7 @@ defmodule DdDataStreams.Payload do
   @moduledoc """
   The MsgPack body the Datadog Agent forwards to the pipeline stats intake.
 
-  The wire shape matches `StatsPayload` in dd-trace-go v2.13, so the field names,
+  The wire shape matches `StatsPayload` in dd-trace-go v2.11.2, so the field names,
   their order and their types are the ones the intake already accepts from the
   official tracers:
 

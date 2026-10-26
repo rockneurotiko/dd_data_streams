@@ -10,7 +10,7 @@ defmodule DdDataStreams.Config do
   runtime - `Application.put_env/3` or `System.put_env/2` - is picked up by the
   next checkpoint or flush that reads it.
 
-  The names and defaults follow dd-trace-go v2.13 and dd-trace-java 1.x, with
+  The names and defaults follow dd-trace-go v2.11.2 and dd-trace-java 1.x, with
   one deliberate exception: those libraries enable data streams monitoring only
   when told to, because they do many other things already, while this one does
   nothing else, so it is on once you depend on it and `DD_DATA_STREAMS_ENABLED`

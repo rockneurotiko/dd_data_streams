@@ -667,8 +667,8 @@ The header key is configurable with `header:` / `DD_DATA_STREAMS_HEADER`, but th
 value format is the official one; changing the key stops the official tracers
 from finding the pathway.
 
-The Agent payload matches the `StatsPayload` shape of dd-trace-go v2.13, and the
-DDSketch bins use the same mapping as dd-trace-go v2.11.2/v2.13 and
+The Agent payload matches the `StatsPayload` shape of dd-trace-go v2.11.2, and the
+DDSketch bins use the same mapping as dd-trace-go v2.11.2 and
   dd-trace-java 1.67.1 (gamma 1.015625, offset 1.8761281912861705), which is
   self-describing in the payload; dd-trace-py uses offset 1338.5, so its bins do
   not line up with Go/Java.

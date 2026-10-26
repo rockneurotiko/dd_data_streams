@@ -13,7 +13,7 @@ defmodule DdDataStreams.PayloadTest do
   @hash 304_706_334_078_420_845
   @parent_hash 2_140_133_010_089_266_238
 
-  # Both fixtures are the output of dd-trace-go v2.13's generated msgp encoder
+  # Both fixtures are the output of dd-trace-go v2.11.2's generated msgp encoder
   # (internal/datastreams/payload_msgp.go) for a StatsPayload whose every field
   # was pinned by hand. They are therefore a foreign encoder's bytes, not this
   # library's: field names, field order, wire types and integer widths all have
