@@ -243,8 +243,12 @@ defmodule DdDataStreams do
   record or forward it yourself, and do not add it to this aggregator again.
   """
   @spec consume(map()) :: Pathway.t() | nil
-  def consume(%{data: _, metadata: _} = message) do
-    case checkpointed(message) do
+  def consume(message), do: consume_message(message, nil)
+
+  # The topology name only exists on the telemetry event, so a consume called
+  # by hand reports none; the producer still comes from the message's metadata.
+  defp consume_message(%{data: _, metadata: _} = message, topology) do
+    case checkpointed(message, topology) do
       nil ->
         Context.clear()
         nil
@@ -257,7 +261,7 @@ defmodule DdDataStreams do
     end
   end
 
-  def consume(_message) do
+  defp consume_message(_message, _topology) do
     Context.clear()
     nil
   end
@@ -442,7 +446,7 @@ defmodule DdDataStreams do
   @spec handle_event([atom()], map(), map(), map()) :: :ok
   def handle_event(@consume_event, _measurements, metadata, _config) do
     try do
-      case consume(Map.get(metadata, :message)) do
+      case consume_message(Map.get(metadata, :message), Map.get(metadata, :topology_name)) do
         # A message that records no checkpoint must not leave the pathway of the
         # previous message behind for a later produce in this stage to continue.
         nil -> Context.clear()
@@ -459,11 +463,13 @@ defmodule DdDataStreams do
 
   def handle_event(@fan_in_event, _measurements, metadata, _config) do
     try do
+      topology = Map.get(metadata, :topology_name)
+
       resolved =
         metadata
         |> Map.get(:messages)
         |> List.wrap()
-        |> Enum.map(&checkpointed/1)
+        |> Enum.map(&checkpointed(&1, topology))
         |> Enum.reject(&is_nil/1)
 
       # Sample one consumed message's pathway and extractor together, so a
@@ -528,10 +534,16 @@ defmodule DdDataStreams do
   # Every configured extractor is asked in order, and the first one that
   # recognises the metadata wins; recording is the caller's business, so the
   # batch handler can reuse this without counting a message twice.
-  defp checkpointed(%{data: data, metadata: metadata}) when is_map(metadata) do
+  defp checkpointed(%{data: data, metadata: metadata}, topology) when is_map(metadata) do
     extractors = extractors()
 
-    case Enum.find_value(extractors, &extractor_checkpoint(&1, data, metadata)) do
+    # What Broadway knows about the producer, for an extractor that names the
+    # edge from it: the {module, opts} the producer stamped on the message
+    # (absent on Broadway before 1.0.4 and on hand-built events), and the
+    # pipeline's name from the event the checkpoint is taken at.
+    producer_info = %{producer: Map.get(metadata, :producer), topology: topology}
+
+    case Enum.find_value(extractors, &extractor_checkpoint(&1, data, metadata, producer_info)) do
       nil ->
         # No extractor names an edge for the message: nothing is recorded, and
         # the miss is reported so the drop is observable without a log line
@@ -548,10 +560,10 @@ defmodule DdDataStreams do
     end
   end
 
-  defp checkpointed(_message), do: nil
+  defp checkpointed(_message, _topology), do: nil
 
-  defp extractor_checkpoint(extractor, data, metadata) do
-    case edge(extractor, metadata) do
+  defp extractor_checkpoint(extractor, data, metadata, producer_info) do
+    case edge(extractor, metadata, producer_info) do
       {:ok, tags, parts} ->
         checkpoint =
           Checkpoints.consume(
@@ -570,8 +582,8 @@ defmodule DdDataStreams do
   # An extractor is the application's own code: it may raise, and it may hand
   # back a shape the library cannot use. Both mean this extractor names no edge
   # for the message, and both are reported so the failure is not silent.
-  defp edge(extractor, metadata) do
-    case extractor.consume(metadata) do
+  defp edge(extractor, metadata, producer_info) do
+    case consume_edge(extractor, metadata, producer_info) do
       {:ok, tags, parts} when is_list(tags) and is_map(parts) ->
         {:ok, tags, parts}
 
@@ -592,6 +604,26 @@ defmodule DdDataStreams do
     error -> extractor_failed(extractor, error, __STACKTRACE__)
   catch
     kind, reason -> extractor_failed(extractor, {kind, reason}, __STACKTRACE__)
+  end
+
+  # consume/2 is optional: an extractor that exports it sees which producer
+  # delivered the message, one that exports only consume/1 keeps its old
+  # contract. attach/0 loads and validates every configured extractor, so the
+  # load branch only runs for a consume/1 called before that.
+  defp consume_edge(extractor, metadata, producer_info) do
+    cond do
+      function_exported?(extractor, :consume, 2) ->
+        extractor.consume(metadata, producer_info)
+
+      function_exported?(extractor, :consume, 1) ->
+        extractor.consume(metadata)
+
+      Code.ensure_loaded?(extractor) and function_exported?(extractor, :consume, 2) ->
+        extractor.consume(metadata, producer_info)
+
+      true ->
+        extractor.consume(metadata)
+    end
   end
 
   defp extractor_failed(extractor, reason, stacktrace) do
@@ -714,7 +746,8 @@ defmodule DdDataStreams do
 
   defp ensure_extractors!(configured) do
     valid? = fn module ->
-      Code.ensure_loaded?(module) and function_exported?(module, :consume, 1) and
+      Code.ensure_loaded?(module) and
+        (function_exported?(module, :consume, 1) or function_exported?(module, :consume, 2)) and
         function_exported?(module, :produce, 1)
     end
 

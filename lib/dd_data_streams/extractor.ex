@@ -17,8 +17,9 @@ defmodule DdDataStreams.Extractor do
 
   An application that talks to several technologies lists one extractor per
   technology, and every message is given to them in order until one recognises
-  its metadata: the first `c:consume/1` that returns tags wins, so the more
-  specific extractor goes first when two could claim the same message.
+  its metadata: the first `c:consume/1` (or `c:consume/2`) that returns tags
+  wins, so the more specific extractor goes first when two could claim the
+  same message.
 
   ## Writing one
 
@@ -29,6 +30,17 @@ defmodule DdDataStreams.Extractor do
   like one that named no edge, and the reason is logged and reported as a
   `[:dd_data_streams, :handler, :error]` telemetry event. `c:produce/1` gets
   the topic a message is published to and returns the produce edge tags.
+
+  `c:consume/1` is enough when the metadata alone names the edge. Some brokers
+  keep the edge identity in the producer's configuration instead - the SQS
+  queue, the Kafka consumer group, the RabbitMQ queue - and only Broadway knows
+  which producer delivered a message. An extractor for such a broker implements
+  `c:consume/2`, which receives `t:producer_info/0` next to the
+  metadata; the library calls `c:consume/2` when the module exports it and
+  `c:consume/1` otherwise, so adding it changes nothing for existing
+  extractors. Both callbacks return the same things, and which of the two
+  sources names the edge - metadata or producer info - is the extractor's own
+  decision.
 
   Tags are `key:value` strings. A key `DdDataStreams.Tags` knows is hashed into
   the node or splits its statistics; one it does not know is reported on the
@@ -82,6 +94,19 @@ defmodule DdDataStreams.Extractor do
   @type tags :: [String.t()]
 
   @typedoc """
+  What delivered the message, for `c:consume/2`.
+
+    * `:producer` - the Broadway producer as `{module, opts}`, the value the
+      producer stamped into the message's metadata under `:producer`; `nil`
+      when the producer stamps none (Broadway before 1.0.4) or the event was
+      built by hand
+    * `:topology` - the registered name of the Broadway pipeline the message
+      is being delivered to, or `nil` when the checkpoint is taken outside a
+      pipeline
+  """
+  @type producer_info :: %{producer: {module(), term()} | nil, topology: term() | nil}
+
+  @typedoc """
   The parts of a message's metadata a checkpoint measures, under the names the
   library uses. Every key is optional.
 
@@ -111,7 +136,22 @@ defmodule DdDataStreams.Extractor do
   @callback consume(metadata :: map()) :: {:ok, tags(), parts()} | :error
 
   @doc """
+  The consume edge of a message, from its metadata and the producer that
+  delivered it.
+
+  Optional: an extractor that exports this callback is called with two
+  arguments instead of `c:consume/1`. Use it when the edge identity lives in
+  the producer's configuration rather than in the message metadata. Everything
+  else is `c:consume/1`'s contract: the return values, the tags, the parts, and
+  `:error` when the metadata and producer together name no edge.
+  """
+  @callback consume(metadata :: map(), producer_info :: producer_info()) ::
+              {:ok, tags(), parts()} | :error
+
+  @doc """
   The produce edge of a message published to `topic`.
   """
   @callback produce(topic :: String.t()) :: tags()
+
+  @optional_callbacks consume: 2
 end

@@ -579,6 +579,43 @@ defmodule DdDataStreams.BroadwayTest do
     assert :telemetry.list_handlers(@consume_event) == []
   end
 
+  test "an extractor that exports consume/2 receives the producer that delivered the message" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.ProducerAwareExtractor
+    ])
+
+    # The configured module exports consume/2 and no consume/1, so attaching
+    # also pins that validation accepts an extractor of either arity.
+    assert :ok = DdDataStreams.attach()
+
+    consume_event(%{
+      data: "hello",
+      metadata: %{producer: {DdDataStreams.BroadwayTest.FakeProducer, [queue: "orders"]}}
+    })
+
+    assert_receive {:checkpoint, checkpoint}
+    assert checkpoint.tags == ["direction:in", "type:test-broker"]
+
+    assert_receive {:producer_info,
+                    %{
+                      producer: {DdDataStreams.BroadwayTest.FakeProducer, [queue: "orders"]},
+                      topology: "TestPipeline"
+                    }, %{producer: {DdDataStreams.BroadwayTest.FakeProducer, _opts}}}
+  end
+
+  test "a consume/2 extractor is given no producer for a message consumed by hand" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.ProducerAwareExtractor
+    ])
+
+    # Called without attach and outside a telemetry event: no topology name is
+    # known and this metadata carries no producer either - both are tolerated.
+    assert %Pathway{} = DdDataStreams.consume(%{data: "hello", metadata: %{}})
+
+    assert_receive {:checkpoint, _checkpoint}
+    assert_receive {:producer_info, %{producer: nil, topology: nil}, %{}}
+  end
+
   test "a message without a subscription records nothing" do
     assert :ok = DdDataStreams.attach()
 
@@ -782,6 +819,22 @@ defmodule DdDataStreams.BroadwayTest do
 
   defp consume_hash(parent), do: Pathway.pathway_hash(node_hash(@consume_tags), parent)
   defp produce_hash(parent), do: Pathway.pathway_hash(node_hash(@produce_tags), parent)
+end
+
+defmodule DdDataStreams.BroadwayTest.ProducerAwareExtractor do
+  # The shape of a broker whose edge identity lives in the producer's
+  # configuration rather than in the message metadata: it exports consume/2
+  # and no consume/1, which also pins that either arity is a valid extractor.
+  # The behaviour declares consume/1, so a consume/2-only module cannot
+  # declare it without an implementation warning.
+  def consume(metadata, producer_info) do
+    # The handler runs in the process that emitted the event, so this reaches
+    # the test that emitted it.
+    send(self(), {:producer_info, producer_info, metadata})
+    {:ok, ["direction:in", "type:test-broker"], %{}}
+  end
+
+  def produce(topic), do: ["direction:out", "topic:" <> topic, "type:test-broker"]
 end
 
 defmodule DdDataStreams.BroadwayTest.KafkaExtractor do
