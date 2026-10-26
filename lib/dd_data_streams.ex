@@ -247,12 +247,13 @@ defmodule DdDataStreams do
   record or forward it yourself, and do not add it to this aggregator again.
   """
   @spec consume(map()) :: Pathway.t() | nil
-  def consume(message), do: consume_message(message, nil)
+  def consume(message), do: consume_message(message, nil, nil)
 
-  # The topology name only exists on the telemetry event, so a consume called
-  # by hand reports none; the producer still comes from the message's metadata.
-  defp consume_message(%{data: _, metadata: _} = message, topology) do
-    case checkpointed(message, topology) do
+  # The topology name and the producer only exist on the telemetry event, so a
+  # consume called by hand reports neither; the producer still comes from the
+  # message's metadata when the caller put it there.
+  defp consume_message(%{data: _, metadata: _} = message, topology, producer) do
+    case checkpointed(message, topology, producer) do
       nil ->
         Context.clear()
         nil
@@ -265,7 +266,7 @@ defmodule DdDataStreams do
     end
   end
 
-  defp consume_message(_message, _topology) do
+  defp consume_message(_message, _topology, _producer) do
     Context.clear()
     nil
   end
@@ -332,6 +333,12 @@ defmodule DdDataStreams do
       Defaults to the size of `data`. The pair this function returns is added to
       it, so pass the size of the message without that pair.
 
+  Any other option is passed to an extractor that implements the optional
+  `c:DdDataStreams.Extractor.produce/3`, which is how an edge that needs more
+  than a topic is named - a RabbitMQ publish names its exchange and routing key.
+  The library neither reads nor validates those options, and an extractor that
+  implements only `produce/2` never sees them.
+
   Returns `[]` when the library is disabled, and records nothing.
   """
   @spec produce(String.t(), term(), keyword()) :: [propagation()]
@@ -382,8 +389,9 @@ defmodule DdDataStreams do
   `:payload_size` option here: call `produce/3` once per message when each size
   needs to be measured differently.
 
-  The `:extractor` option is the same as for `produce/3`. Call it immediately
-  before the batch send, for the same reason as `produce/3`.
+  The `:extractor` option is the same as for `produce/3`, as is any option an
+  extractor implementing `c:DdDataStreams.Extractor.produce/3` reads. Call it
+  immediately before the batch send, for the same reason as `produce/3`.
   """
   @spec produce_batch(String.t(), Enumerable.t(), keyword()) :: [propagation()]
   def produce_batch(topic, datas, opts \\ []) when is_binary(topic) do
@@ -454,7 +462,11 @@ defmodule DdDataStreams do
   @spec handle_event([atom()], map(), map(), map()) :: :ok
   def handle_event(@consume_event, _measurements, metadata, _config) do
     try do
-      case consume_message(Map.get(metadata, :message), Map.get(metadata, :topology_name)) do
+      case consume_message(
+             Map.get(metadata, :message),
+             Map.get(metadata, :topology_name),
+             Map.get(metadata, :producer)
+           ) do
         # A message that records no checkpoint must not leave the pathway of the
         # previous message behind for a later produce in this stage to continue.
         nil -> Context.clear()
@@ -472,12 +484,13 @@ defmodule DdDataStreams do
   def handle_event(@fan_in_event, _measurements, metadata, _config) do
     try do
       topology = Map.get(metadata, :topology_name)
+      producer = Map.get(metadata, :producer)
 
       resolved =
         metadata
         |> Map.get(:messages)
         |> List.wrap()
-        |> Enum.map(&checkpointed(&1, topology))
+        |> Enum.map(&checkpointed(&1, topology, producer))
         |> Enum.reject(&is_nil/1)
 
       # Sample one consumed message's pathway, with the extractor and producer
@@ -545,14 +558,15 @@ defmodule DdDataStreams do
   # asked in order, and the first one that
   # recognises the metadata wins; recording is the caller's business, so the
   # batch handler can reuse this without counting a message twice.
-  defp checkpointed(%{data: data, metadata: metadata}, topology) when is_map(metadata) do
+  defp checkpointed(%{data: data, metadata: metadata}, topology, producer)
+       when is_map(metadata) do
     extractors = extractors()
 
     # What Broadway knows about the producer, for an extractor that names the
-    # edge from it: the {module, opts} the producer stamped on the message
-    # (absent on Broadway before 1.0.4 and on hand-built events), and the
+    # edge from it: the {module, opts} the event reports - a message that
+    # carries its own wins, since that is the one actually delivered - and the
     # pipeline's name from the event the checkpoint is taken at.
-    producer_info = %{producer: Map.get(metadata, :producer), topology: topology}
+    producer_info = %{producer: Map.get(metadata, :producer) || producer, topology: topology}
 
     case Enum.find_value(extractors, &extractor_checkpoint(&1, data, metadata, producer_info)) do
       nil ->
@@ -571,7 +585,7 @@ defmodule DdDataStreams do
     end
   end
 
-  defp checkpointed(_message, _topology), do: nil
+  defp checkpointed(_message, _topology, _producer), do: nil
 
   defp extractor_checkpoint(extractor, data, metadata, producer_info) do
     case edge(extractor, metadata, producer_info) do
@@ -718,12 +732,30 @@ defmodule DdDataStreams do
   # the only configured one: a topic name alone does not say which bus it goes
   # to, so an application with several extractors has to say so once the stage
   # that is producing did not consume the message itself.
+  # produce/3 is optional: an extractor that exports it names the outgoing edge
+  # from the options the host passed, one that exports only produce/2 keeps its
+  # old contract. attach/0 validates every configured extractor, so the load
+  # branch only runs for a produce called before that.
   defp produce_tags(topic, opts) do
     extractor =
       explicit_extractor(Keyword.get(opts, :extractor)) || Context.get_extractor() ||
         only_extractor!()
 
-    extractor.produce(topic, Context.get_producer_info())
+    producer_info = Context.get_producer_info()
+
+    cond do
+      function_exported?(extractor, :produce, 3) ->
+        extractor.produce(topic, producer_info, opts)
+
+      function_exported?(extractor, :produce, 2) ->
+        extractor.produce(topic, producer_info)
+
+      Code.ensure_loaded?(extractor) and function_exported?(extractor, :produce, 3) ->
+        extractor.produce(topic, producer_info, opts)
+
+      true ->
+        extractor.produce(topic, producer_info)
+    end
   end
 
   # A mistyped extractor named on the call would otherwise fail much later as a
@@ -732,11 +764,11 @@ defmodule DdDataStreams do
 
   defp explicit_extractor(extractor) do
     if is_atom(extractor) and Code.ensure_loaded?(extractor) and
-         function_exported?(extractor, :produce, 2) do
+         (function_exported?(extractor, :produce, 2) or function_exported?(extractor, :produce, 3)) do
       extractor
     else
       raise ArgumentError,
-            "extractor: #{inspect(extractor)} must be a module exporting produce/2"
+            "extractor: #{inspect(extractor)} must be a module exporting produce/2 or produce/3"
     end
   end
 
@@ -762,7 +794,7 @@ defmodule DdDataStreams do
     valid? = fn module ->
       Code.ensure_loaded?(module) and
         (function_exported?(module, :consume, 1) or function_exported?(module, :consume, 2)) and
-        function_exported?(module, :produce, 2)
+        (function_exported?(module, :produce, 2) or function_exported?(module, :produce, 3))
     end
 
     case configured do

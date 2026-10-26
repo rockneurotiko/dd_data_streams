@@ -644,6 +644,74 @@ defmodule DdDataStreams.BroadwayTest do
     assert_receive {:producer_info, %{producer: nil, topology: nil}, %{}}
   end
 
+  test "a consume/2 extractor is given the producer the event reports" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.ProducerAwareExtractor
+    ])
+
+    assert :ok = DdDataStreams.attach()
+
+    producer = {DdDataStreams.BroadwayTest.FakeProducer, [queue: "orders"]}
+
+    # Broadway reports the producer on the event, never on the message, so a
+    # message that carries none must still have it offered to the extractor.
+    consume_event(pubsub_message(nil), %{producer: producer})
+
+    assert_receive {:producer_info, %{producer: ^producer, topology: "TestPipeline"}, %{}}
+  end
+
+  test "a producer the message carries wins over the one the event reports" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.ProducerAwareExtractor
+    ])
+
+    assert :ok = DdDataStreams.attach()
+
+    event_producer = {DdDataStreams.BroadwayTest.FakeProducer, [queue: "event"]}
+    message_producer = {DdDataStreams.BroadwayTest.FakeProducer, [queue: "message"]}
+
+    consume_event(pubsub_message(nil, producer: message_producer), %{producer: event_producer})
+
+    assert_receive {:producer_info, %{producer: ^message_producer, topology: _}, %{}}
+  end
+
+  test "a batch event offers the producer it reports to consume/2" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.ProducerAwareExtractor
+    ])
+
+    assert :ok = DdDataStreams.attach()
+
+    producer = {DdDataStreams.BroadwayTest.FakeProducer, [queue: "orders"]}
+
+    batch_event([pubsub_message(nil)], %{producer: producer})
+
+    assert_receive {:producer_info, %{producer: ^producer, topology: "TestPipeline"}, %{}}
+  end
+
+  test "an extractor that exports produce/3 receives the options the call was made with" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.OptionAwareExtractor
+    ])
+
+    assert [{key, _value}] =
+             DdDataStreams.produce("orders", "payload",
+               extractor: DdDataStreams.BroadwayTest.OptionAwareExtractor,
+               exchange: "orders-x",
+               routing_key: "eu"
+             )
+
+    assert key == "dd-pathway-ctx-base64"
+    assert_receive {:checkpoint, produced}
+
+    assert produced.tags == [
+             "direction:out",
+             "exchange:orders-x",
+             "has_routing_key:true",
+             "type:test-broker"
+           ]
+  end
+
   test "the produce edge reports identity from the producer the stage consumed with" do
     Application.put_env(:dd_data_streams, :extractors, [
       DdDataStreams.BroadwayTest.ProducerAwareExtractor
@@ -838,25 +906,28 @@ defmodule DdDataStreams.BroadwayTest do
     )
   end
 
-  defp batch_event(messages) do
+  defp batch_event(messages, metadata \\ %{}) do
     :telemetry.execute(
       @fan_in_event,
       %{monotonic_time: 0, system_time: 0},
-      %{
-        topology_name: "TestPipeline",
-        name: "TestPipeline.Broadway.BatchProcessor_default",
-        index: 0,
-        messages: messages,
-        batch_info: %{
-          batcher: :default,
-          batch_key: :default,
-          partition: nil,
-          size: length(messages),
-          trigger: 1
+      Map.merge(
+        %{
+          topology_name: "TestPipeline",
+          name: "TestPipeline.Broadway.BatchProcessor_default",
+          index: 0,
+          messages: messages,
+          batch_info: %{
+            batcher: :default,
+            batch_key: :default,
+            partition: nil,
+            size: length(messages),
+            trigger: 1
+          },
+          context: %{},
+          producer: nil
         },
-        context: %{},
-        producer: nil
-      }
+        metadata
+      )
     )
   end
 
@@ -883,10 +954,8 @@ end
 
 defmodule DdDataStreams.BroadwayTest.ProducerAwareExtractor do
   # The shape of a broker whose edge identity lives in the producer's
-  # configuration rather than in the message metadata: it exports consume/2
-  # and no consume/1, which also pins that either arity is a valid extractor.
-  # The behaviour declares consume/1, so a consume/2-only module cannot
-  # declare it without an implementation warning.
+  # configuration rather than in the message metadata: it exports consume/2 and
+  # no consume/1, which also pins that either arity is a valid extractor.
   def consume(metadata, producer_info) do
     # The handler runs in the process that emitted the event, so this reaches
     # the test that emitted it.
@@ -909,6 +978,26 @@ defmodule DdDataStreams.BroadwayTest.ProducerAwareExtractor do
       _no_producer ->
         tags
     end
+  end
+end
+
+defmodule DdDataStreams.BroadwayTest.OptionAwareExtractor do
+  # The shape of a broker whose outgoing edge takes more than a topic: it exports
+  # produce/3, so the exchange and routing key reach it as options the caller
+  # invented rather than as anything the library knows about.
+  @behaviour DdDataStreams.Extractor
+
+  @impl true
+  def consume(_metadata), do: :error
+
+  @impl true
+  def produce(_topic, _producer_info, opts) do
+    [
+      "direction:out",
+      "exchange:" <> Keyword.get(opts, :exchange, ""),
+      "has_routing_key:" <> to_string(Keyword.has_key?(opts, :routing_key)),
+      "type:test-broker"
+    ]
   end
 end
 

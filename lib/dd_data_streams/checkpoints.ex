@@ -107,8 +107,8 @@ defmodule DdDataStreams.Checkpoints do
 
   @type message :: %{
           required(:data) => binary(),
-          optional(:attributes) => %{optional(String.t()) => String.t()} | nil,
-          optional(:headers) => [{String.t(), String.t()}] | nil,
+          optional(:attributes) => map() | [tuple()] | nil,
+          optional(:headers) => [tuple()] | nil,
           optional(:ordering_key) => binary() | nil,
           optional(:pathway_start) => integer() | nil,
           optional(:edge_start) => integer() | nil

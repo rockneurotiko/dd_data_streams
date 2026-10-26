@@ -18,8 +18,30 @@ defmodule DdDataStreams.Extractor.GooglePubSubTest do
     assert parts == %{
              attributes: %{"origin" => "test"},
              ordering_key: "customer-1",
-             received_at: 42
+             received_at: 42,
+             pathway_start: nil,
+             edge_start: nil
            }
+  end
+
+  test "the publish time starts the checkpoint of a message that starts a pathway" do
+    publish_time = ~U[2026-10-26 19:00:00.123456Z]
+
+    assert {:ok, _tags, parts} =
+             GooglePubSub.consume(%{subscription: "orders-sub", publishTime: publish_time})
+
+    assert parts.pathway_start == DateTime.to_unix(publish_time, :native)
+    assert parts.edge_start == parts.pathway_start
+  end
+
+  test "a publish time that is not a DateTime is dropped" do
+    for publish_time <- [nil, "2026-10-26T19:00:00Z", 1_780_345_623_738] do
+      assert {:ok, _tags, parts} =
+               GooglePubSub.consume(%{subscription: "orders-sub", publishTime: publish_time})
+
+      assert parts.pathway_start == nil
+      assert parts.edge_start == nil
+    end
   end
 
   test "an already-short subscription is reported as it is" do

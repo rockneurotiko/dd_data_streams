@@ -4,8 +4,8 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
 
   A Pub/Sub message names its consume edge by its subscription, and v2 stamps it
   as `metadata.subscription` together with `metadata.attributes`,
-  `metadata.orderingKey` and `metadata.received_at`, which is all a checkpoint
-  needs. A message that carries no subscription - the shape
+  `metadata.orderingKey` and `metadata.received_at`, which is what a checkpoint
+  needs to name the edge. A message that carries no subscription - the shape
   `BroadwayCloudPubSub` v1 produces - records no consume checkpoint, because
   there is no name to report its edge under.
 
@@ -22,6 +22,15 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
   under `topic:` instead, so a Py consumer appears as a different node; the
   pathway still connects, because the link between two nodes is the hash
   carried on the message. An already-short name is reported as it is.
+
+  The publish time Pub/Sub stamps on a message - `metadata.publishTime`, a
+  `%DateTime{}` in v2 - starts the consume checkpoint of a message that starts a
+  pathway, so a pipeline that only consumes reports how long the message waited
+  in the bus instead of zero. A message that carries a pathway header keeps the
+  start its producer wrote, because a first-hop start is only offered to a
+  pathway that has not started. A publish time that is absent, is not a
+  `%DateTime{}`, or falls outside the window a clock could plausibly have
+  stamped is dropped rather than believed.
   """
 
   @behaviour DdDataStreams.Extractor
@@ -50,7 +59,17 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
     %{
       attributes: Map.get(metadata, :attributes),
       ordering_key: Map.get(metadata, :orderingKey),
-      received_at: Map.get(metadata, :received_at)
+      received_at: Map.get(metadata, :received_at),
+      pathway_start: publish_time(metadata),
+      edge_start: publish_time(metadata)
     }
   end
+
+  # v2 stamps the publish time as a DateTime. Anything else - v1 metadata, a
+  # hand-built fixture, a broken producer - leaves both starts nil, which is
+  # what such a message reported before: zero latency rather than a wrong one.
+  defp publish_time(%{publishTime: %DateTime{} = publish_time}),
+    do: DateTime.to_unix(publish_time, :native)
+
+  defp publish_time(_metadata), do: nil
 end

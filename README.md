@@ -277,6 +277,13 @@ writes attribute maps (and header lists), so the producer merges the pair
 including how Pub/Sub's full resource names are reduced to short ids - is under
 [Edge tags](#edge-tags).
 
+Pub/Sub stamps the time it accepted the message, and the extractor reports it as
+the first-hop start, so a pipeline that only consumes - no upstream service
+propagating to it - reports how long the message waited in the bus instead of
+zero. A message that carries a pathway header keeps the start its producer
+wrote; a publish time that is missing or that a clock could not have stamped is
+dropped, as described under [Latency](#latency).
+
 ### SQS wrapping
 
 For SQS, BroadwaySQS exposes the pathway under the `_datadog` message
@@ -320,15 +327,30 @@ queue, the Kafka consumer group) implements `consume/2` and takes the edge name
 from `producer_info`, and SQS additionally needs the `_datadog` wrapping
 under [SQS wrapping](#sqs-wrapping).
 
-On the produce side there is no metadata to look at, only a topic, so a produce
-is reported by the extractor that consumed the message being answered. A stage
-that changes technology names the outgoing one by passing it to the same call
-the [quickstart](#quickstart) makes:
+On the produce side there is no metadata to look at, only the topic the call is
+made with and the options passed to it, so a produce is reported by the
+extractor that consumed the message being answered. A stage that changes
+technology names the outgoing one by passing it to the same call the
+[quickstart](#quickstart) makes:
 
 ```elixir
 # Consumed from Kafka, publishing to Pub/Sub.
 DdDataStreams.produce("orders-out", data,
   extractor: DdDataStreams.Extractor.GooglePubSub
+)
+```
+
+A broker whose outgoing edge takes more than a topic - a RabbitMQ publish is
+named by its exchange and its routing key - is expressed by an extractor that
+implements `produce/3`, which receives the options of the same call. The
+library reads `:extractor` and `:payload_size` itself and hands the list over
+unchanged, so the extra options are the host's vocabulary:
+
+```elixir
+DdDataStreams.produce(routing_key, data,
+  extractor: MyApp.RabbitMQExtractor,
+  exchange: "orders",
+  routing_key: routing_key
 )
 ```
 

@@ -51,6 +51,11 @@ defmodule DdDataStreams.Extractor do
   `kafka`, `sqs`, ...) and it is part of every node's identity, so it has to be
   the same value for every service in the pipeline.
 
+  An extractor implements one callback of each pair - `c:consume/1` or
+  `c:consume/2`, and `c:produce/2` or `c:produce/3` - which is why all four are
+  optional and `attach/0` is what rejects a module that implements neither of a
+  pair.
+
   A `BroadwayKafka` pipeline, for example, stamps `metadata.topic`,
   `metadata.headers` and `metadata.ts`:
 
@@ -98,6 +103,13 @@ defmodule DdDataStreams.Extractor do
   fields nil. A produce in a stage that consumed a message is named by the
   extractor that consumed it, and a stage that produces without consuming
   passes its extractor to `DdDataStreams.produce/3`.
+
+  A topic is not always enough to name an outgoing edge: a RabbitMQ publish is
+  named by its exchange and its routing key. An extractor for such a broker
+  implements `c:produce/3`, which receives the options the host passed to
+  `DdDataStreams.produce/3`, and names the edge from whatever the host put
+  there. The library neither reads nor validates those options, so this stays
+  the host's vocabulary rather than a broker the core knows about.
   """
 
   @typedoc """
@@ -111,10 +123,11 @@ defmodule DdDataStreams.Extractor do
   @typedoc """
   What delivered the message, for `c:consume/2` and `c:produce/2`.
 
-    * `:producer` - the Broadway producer as `{module, opts}`, the value the
-      producer stamped into the message's metadata under `:producer`; `nil`
-      when the producer stamps none (Broadway before 1.0.4) or the event was
-      built by hand
+    * `:producer` - the Broadway producer as `{module, opts}`, as Broadway
+      reports it on the event that delivered the message; `nil` when Broadway
+      reports none (before 1.0.4) or the event was built by hand. A producer
+      that stamps itself into the message's metadata wins over the event,
+      since the message is the one that was actually delivered
     * `:topology` - the registered name of the Broadway pipeline the message
       is being delivered to, or `nil` when the checkpoint is taken outside a
       pipeline
@@ -126,7 +139,10 @@ defmodule DdDataStreams.Extractor do
   library uses. Every key is optional.
 
     * `:attributes` - the inbound attributes as a map, or the inbound headers as
-      a list of `{key, value}` pairs, carrying `dd-pathway-ctx-base64`
+      a list of tuples, each carrying `dd-pathway-ctx-base64` under its key:
+      the entry is read as whichever tuple has the key first and the value
+      last, so a Kafka `{key, value}` pair and an AMQP `{key, type, value}`
+      triple both work
     * `:ordering_key` - the ordering key, counted towards the payload size
     * `:received_at` - when the message reached the pipeline, in native time
       units; `nil` (or absent) means the consume checkpoint is stamped now and
@@ -147,7 +163,7 @@ defmodule DdDataStreams.Extractor do
       checkpoint time
   """
   @type parts :: %{
-          optional(:attributes) => map() | [{String.t(), String.t()}] | nil,
+          optional(:attributes) => map() | [tuple()] | nil,
           optional(:ordering_key) => term(),
           optional(:received_at) => integer() | nil,
           optional(:pathway_start) => integer() | nil,
@@ -187,5 +203,26 @@ defmodule DdDataStreams.Extractor do
   """
   @callback produce(topic :: String.t(), producer_info :: producer_info()) :: tags()
 
-  @optional_callbacks consume: 2
+  @doc """
+  The produce edge of a message published to `topic`, from the options the call
+  was made with.
+
+  Optional: an extractor that exports this callback is called with three
+  arguments instead of two. Use it when a topic alone does not name the
+  outgoing edge, and let the host pass what it takes as options of its own:
+
+      DdDataStreams.produce(topic, data,
+        extractor: MyApp.RabbitMQExtractor,
+        exchange: "orders",
+        routing_key: "orders-eu"
+      )
+
+  The library reads `:extractor` and `:payload_size` from the options itself and
+  passes the list through unchanged, so everything else arrives as the host
+  wrote it. Everything else is `c:produce/2`'s contract: the return value, the
+  tags, and the `t:producer_info/0` argument.
+  """
+  @callback produce(topic :: String.t(), producer_info :: producer_info(), keyword()) :: tags()
+
+  @optional_callbacks consume: 1, consume: 2, produce: 2, produce: 3
 end
