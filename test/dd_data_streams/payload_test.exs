@@ -13,11 +13,15 @@ defmodule DdDataStreams.PayloadTest do
   @hash 304_706_334_078_420_845
   @parent_hash 2_140_133_010_089_266_238
 
-  # Both fixtures are the output of dd-trace-go v2.11.2's generated msgp encoder
-  # (internal/datastreams/payload_msgp.go) for a StatsPayload whose every field
-  # was pinned by hand. They are therefore a foreign encoder's bytes, not this
-  # library's: field names, field order, wire types and integer widths all have
-  # to agree for a comparison to pass.
+  # Both fixtures were built field by field and encoded with dd-trace-go
+  # v2.11.2's generated msgp encoder (internal/datastreams/payload_msgp.go at
+  # commit c7dcfe8940aad88f4b779a3e4ad75c478397872d,
+  # https://github.com/DataDog/dd-trace-go/tree/c7dcfe8940aad88f4b779a3e4ad75c478397872d/internal/datastreams),
+  # with every field hand-pinned to this library's values. Lang and
+  # TracerVersion intentionally differ from what Go would emit; ProductMask
+  # matches Go's APM|DSM value. They are therefore a foreign encoder's bytes,
+  # not this library's: field names, field order, wire types and integer widths
+  # all have to agree for a comparison to pass.
   @fixture_current """
   88a3456e76a470726f64a753657276696365a8636865636b6f7574a553746174739186a55374
   617274cf17979cfe362a0000a84475726174696f6ecf00000002540be400a553746174739187
@@ -140,7 +144,7 @@ defmodule DdDataStreams.PayloadTest do
     })
   end
 
-  test "the current bucket matches the captured dd-trace-go body byte for byte" do
+  test "the current bucket matches the hand-pinned msgp body byte for byte" do
     payload =
       fixture_payload(
         @consume_tags,
@@ -156,7 +160,7 @@ defmodule DdDataStreams.PayloadTest do
     assert encoded(payload) == hex(@fixture_current)
   end
 
-  test "the origin bucket matches the captured dd-trace-go body byte for byte" do
+  test "the origin bucket matches the hand-pinned msgp body byte for byte" do
     payload =
       fixture_payload(
         @produce_tags,
