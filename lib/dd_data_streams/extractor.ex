@@ -149,7 +149,9 @@ defmodule DdDataStreams.Extractor do
   @type parts :: %{
           optional(:attributes) => map() | [{String.t(), String.t()}] | nil,
           optional(:ordering_key) => term(),
-          optional(:received_at) => integer() | nil
+          optional(:received_at) => integer() | nil,
+          optional(:pathway_start) => integer() | nil,
+          optional(:edge_start) => integer() | nil
         }
 
   @doc """
