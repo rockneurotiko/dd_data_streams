@@ -107,6 +107,93 @@ defmodule DdDataStreams.CheckpointsTest do
     end
   end
 
+  test "consume reports publish to consume latency from the broker's publish time" do
+    received_ms = System.system_time(:millisecond)
+    published_ms = received_ms - 40_000
+
+    message = %{
+      data: "hello",
+      attributes: %{},
+      ordering_key: "customer-1",
+      pathway_start: native(published_ms),
+      edge_start: native(published_ms)
+    }
+
+    {pathway, checkpoint} = Checkpoints.consume(message, @consume_tags, native(received_ms))
+
+    assert checkpoint.parent_hash == 0
+    assert checkpoint.timestamp == received_ms
+    assert checkpoint.pathway_latency == 40_000
+    assert checkpoint.edge_latency == 40_000
+    assert pathway.pathway_start == published_ms
+  end
+
+  test "consume does not believe a publish time in the future" do
+    received_ms = System.system_time(:millisecond)
+
+    # Within a minute of this node's clock the timestamp is plausible and is
+    # used; the latency simply clamps to zero.
+    plausible = received_ms + 30_000
+
+    {pathway, checkpoint} =
+      Checkpoints.consume(
+        %{data: "hello", attributes: %{}, pathway_start: native(plausible)},
+        @consume_tags,
+        native(received_ms)
+      )
+
+    assert checkpoint.pathway_latency == 0
+    assert checkpoint.edge_latency == 0
+    assert pathway.pathway_start == plausible
+
+    # An hour ahead is garbage rather than skew, so the timestamp is dropped
+    # and the pathway starts at the checkpoint time.
+    implausible = received_ms + 3_600_000
+
+    {pathway, checkpoint} =
+      Checkpoints.consume(
+        %{data: "hello", attributes: %{}, pathway_start: native(implausible)},
+        @consume_tags,
+        native(received_ms)
+      )
+
+    assert checkpoint.pathway_latency == 0
+    assert checkpoint.edge_latency == 0
+    assert pathway.pathway_start == received_ms
+  end
+
+  test "consume without a publish time keeps reporting zero latency" do
+    received_ms = 1_780_345_623_738
+
+    {pathway, checkpoint} =
+      Checkpoints.consume(pubsub_message(%{}), @consume_tags, native(received_ms))
+
+    assert checkpoint.pathway_latency == 0
+    assert checkpoint.edge_latency == 0
+    assert pathway.pathway_start == received_ms
+    assert pathway.edge_start == received_ms
+  end
+
+  test "a publish time does not move the start a pathway header carries" do
+    header = reference_header()
+    received_ms = header.edge_start + 42
+    published_ms = received_ms - 60_000
+
+    message = %{
+      data: "hello",
+      attributes: %{"dd-pathway-ctx-base64" => header.base64},
+      pathway_start: native(published_ms),
+      edge_start: native(published_ms)
+    }
+
+    {pathway, checkpoint} = Checkpoints.consume(message, @consume_tags, native(received_ms))
+
+    assert checkpoint.parent_hash == header.hash
+    assert pathway.pathway_start == header.pathway_start
+    assert checkpoint.pathway_latency == received_ms - header.pathway_start
+    assert checkpoint.edge_latency == 42
+  end
+
   test "produce chains the produce edge onto the consume checkpoint" do
     header = reference_header()
     {consumed, consume_checkpoint} = consume_reference(header)

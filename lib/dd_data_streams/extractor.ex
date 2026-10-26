@@ -61,7 +61,7 @@ defmodule DdDataStreams.Extractor do
           {:ok, ["direction:in", "topic:" <> topic, "type:kafka"],
            %{
              attributes: Map.get(metadata, :headers),
-             received_at:
+             pathway_start:
                case Map.get(metadata, :ts) do
                  nil -> nil
                  milliseconds -> System.convert_time_unit(milliseconds, :millisecond, :native)
@@ -74,6 +74,15 @@ defmodule DdDataStreams.Extractor do
         @impl true
         def produce(topic), do: ["direction:out", "topic:" <> topic, "type:kafka"]
       end
+
+  The record timestamp the example reads is one of several publish times a
+  broker stamps on a message: Pub/Sub's `publishTime`, Kafka's record timestamp,
+  SQS's `SentTimestamp`, RabbitMQ's `:timestamp`. Returning one as
+  `:pathway_start` makes a message that starts a pathway measure from it, so a
+  pipeline that only ever consumes reports how long the message waited in the
+  bus instead of zero. `:received_at` keeps its own meaning - when the message
+  reached the pipeline - so a message with neither still reports zero latency,
+  exactly as before.
 
   A pipeline that publishes several tags per edge, such as `partition:` or
   `group:`, adds them here; the keys in `DdDataStreams.Tags` decide whether they
@@ -118,6 +127,18 @@ defmodule DdDataStreams.Extractor do
       reports no consume latency. `DdDataStreams.consume/1` turns `nil` into the
       current time before calling `DdDataStreams.Checkpoints.consume/3`, which
       requires an integer
+    * `:pathway_start` - the broker's publish time for a first-hop message, in
+      native time units, used as the pathway's start so the checkpoint reports
+      publish to consume latency. `nil` (or absent) leaves the pathway starting
+      at `received_at`, which reports zero latency. It is only taken from a
+      message that starts a pathway: one carrying a pathway header already
+      carries the start its producer wrote. A time before 2000-01-01 or more
+      than a minute ahead of this node's clock is dropped rather than believed,
+      so a garbage broker timestamp cannot report a decades-long latency or a
+      start in the future
+    * `:edge_start` - the same publish time taken as the consume edge's start,
+      under the same rules; `nil` (or absent) leaves the edge starting at the
+      checkpoint time
   """
   @type parts :: %{
           optional(:attributes) => map() | [{String.t(), String.t()}] | nil,

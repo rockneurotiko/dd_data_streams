@@ -31,6 +31,9 @@ defmodule DdDataStreams.Checkpoints do
       BroadwaySQS exposes under `message.metadata.message_attributes`; the
       pathway is read from its `_datadog` JSON attribute
     * `:ordering_key` - the ordering key, `nil` or `""` when it is unset
+    * `:pathway_start` - the broker's publish time for a message that starts a
+      pathway, in native time units; see Latency below
+    * `:edge_start` - the same publish time taken as the consume edge's start
 
   These are the values `BroadwayCloudPubSub` v2 exposes as `message.data`,
   `message.metadata.attributes` and `message.metadata.orderingKey`, and the
@@ -62,7 +65,13 @@ defmodule DdDataStreams.Checkpoints do
   `consume/3` checkpoints at `received_at`, in native time units, so the consume
   edge latency is the time the message spent waiting in the bus rather than the
   time it spent queued inside Broadway. A message that carried no pathway starts
-  at `received_at`, so both latencies are zero. `produce/3` checkpoints at the
+  at `received_at`, so both latencies are zero, unless it also carries the
+  broker's publish time (`:pathway_start` / `:edge_start`): a first-hop message
+  then starts there and reports publish to consume latency, while a message that
+  carried a pathway header keeps the start the header encodes. A publish time
+  before 2000-01-01 or more than a minute ahead of this node's clock is dropped
+  rather than believed, so a garbage broker timestamp cannot report a
+  decades-long latency or a start in the future. `produce/3` checkpoints at the
   current time. Times are Unix milliseconds after conversion.
 
   ## Pathways
@@ -87,11 +96,20 @@ defmodule DdDataStreams.Checkpoints do
 
   @skip_event [:dd_data_streams, :checkpoint, :skip]
 
+  # A publish time is a Unix millisecond a latency is measured back from, so a
+  # value before 2000-01-01 is not a clock a broker could have stamped and one
+  # a minute ahead of this node's clock is skew rather than a publish time. The
+  # same window Propagator.decode/1 gives a header's starts.
+  @epoch_floor_ms 946_684_800_000
+  @future_horizon_ms 60_000
+
   @type message :: %{
           required(:data) => binary(),
           optional(:attributes) => %{optional(String.t()) => String.t()} | nil,
           optional(:headers) => [{String.t(), String.t()}] | nil,
-          optional(:ordering_key) => binary() | nil
+          optional(:ordering_key) => binary() | nil,
+          optional(:pathway_start) => integer() | nil,
+          optional(:edge_start) => integer() | nil
         }
 
   @doc """
@@ -114,12 +132,7 @@ defmodule DdDataStreams.Checkpoints do
     pathway = continued(Carrier.fetch(carrier, Config.header()))
 
     {pathway, checkpoint} =
-      Pathway.set_checkpoint(pathway, tags,
-        now: System.convert_time_unit(received_at, :native, :millisecond),
-        service: Config.service(),
-        env: Config.env(),
-        primary_tag: Config.primary_tag()
-      )
+      Pathway.set_checkpoint(pathway, tags, checkpoint_opts(pathway, message, received_at))
 
     {pathway, Map.put(checkpoint, :payload_size, payload_size(message))}
   end
@@ -166,6 +179,49 @@ defmodule DdDataStreams.Checkpoints do
 
     {pathway, Map.put(checkpoint, :payload_size, payload_size)}
   end
+
+  # The checkpoint is always stamped at received_at; the broker's publish time,
+  # when the message carries one and its pathway has not started yet, replaces
+  # the start the checkpoint would otherwise take, so a message with no header
+  # and no publish time behaves exactly as it did before.
+  @spec checkpoint_opts(Pathway.t(), message(), integer()) :: keyword()
+  defp checkpoint_opts(pathway, message, received_at) do
+    [
+      now: System.convert_time_unit(received_at, :native, :millisecond),
+      service: Config.service(),
+      env: Config.env(),
+      primary_tag: Config.primary_tag()
+    ] ++ first_hop_starts(pathway, message)
+  end
+
+  # A pathway continued from a header already carries the start its first
+  # producer wrote, and a garbage publish time must not replace it with a
+  # negative or decades-long latency, so the overrides are only offered for a
+  # pathway that has not started and only when the time is one a clock could
+  # have stamped.
+  @spec first_hop_starts(Pathway.t(), message()) :: keyword()
+  defp first_hop_starts(%Pathway{pathway_start: 0}, message) do
+    Enum.flat_map([:pathway_start, :edge_start], fn key ->
+      case publish_time(Map.get(message, key)) do
+        nil -> []
+        milliseconds -> [{key, milliseconds}]
+      end
+    end)
+  end
+
+  defp first_hop_starts(_pathway, _message), do: []
+
+  @spec publish_time(term()) :: integer() | nil
+  defp publish_time(value) when is_integer(value) do
+    milliseconds = System.convert_time_unit(value, :native, :millisecond)
+
+    if milliseconds >= @epoch_floor_ms and
+         milliseconds <= System.system_time(:millisecond) + @future_horizon_ms do
+      milliseconds
+    end
+  end
+
+  defp publish_time(_value), do: nil
 
   # The carrier is whichever of the two shapes the message arrived with, so a
   # Kafka pipeline reads its header list back and a Pub/Sub pipeline its map.
