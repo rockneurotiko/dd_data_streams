@@ -209,34 +209,45 @@ The pathway is taken from the process context, so the produce edge continues
 the consumed one. In `handle_batch/4` the context holds one pathway sampled from
 the batch; use `produce_batch/3` when one send answers the whole batch.
 
-A pipeline that does not use Broadway can call `consume/1` itself:
+A pipeline that does not use Broadway can call `consume/1` itself, with the
+message its own consumer client delivered - a Broadway message, or a map shaped
+like one:
 
 ```elixir
-pathway =
-  DdDataStreams.consume(%{
-    data: data,
-    metadata: %{
-      subscription: "orders-sub",
-      attributes: attributes,
-      orderingKey: nil,
-      received_at: received_at
-    }
-  })
+case DdDataStreams.consume(%{
+       data: message.data,
+       metadata: %{
+         subscription: message.metadata.subscription,
+         attributes: message.metadata.attributes,
+         orderingKey: nil,
+         received_at: message.metadata.received_at
+       }
+     }) do
+  nil ->
+    # The extractor found no edge: nothing was recorded and the context
+    # was cleared, so there is no pathway to continue.
+    nil
 
-# In the same process:
-out_attributes = existing_attributes
+  pathway ->
+    # In the same process:
+    out_attributes = existing_attributes
 
-out_attributes =
-  case DdDataStreams.produce("orders-out", out_data) do
-    [{key, value}] -> Map.put(out_attributes, key, value)
-    [] -> out_attributes
-  end
+    out_attributes =
+      case DdDataStreams.produce("orders-out", out_data) do
+        [{key, value}] -> Map.put(out_attributes, key, value)
+        [] -> out_attributes
+      end
 
-MyApp.PubSub.publish("orders-out", out_data, attributes: out_attributes)
+    MyApp.PubSub.publish("orders-out", out_data, attributes: out_attributes)
+
+    pathway
+end
 ```
 
-`consume/1` already leaves the pathway in the context. If the produce happens in
-another process, pass the pathway with `DdDataStreams.Context.put/1` there.
+`consume/1` already leaves the pathway in the context, so a produce in that
+same process continues the consumed edge. When the produce happens in another
+process instead, hand the pathway it returned over: call
+`DdDataStreams.Context.put(pathway)` there, before that process produces.
 
 ### 3. What travels on the message
 
@@ -468,36 +479,44 @@ or a map shaped like one - the body in `:data`, the producer's metadata in
 `:metadata` - so the extractor names the edge exactly as it does for Broadway:
 
 ```elixir
-pathway =
-  DdDataStreams.consume(%{
-    data: message.data,
-    metadata: %{
-      subscription: "orders-sub",
-      attributes: message.attributes,
-      orderingKey: nil,
-      received_at: received_at
-    }
-  })
+case DdDataStreams.consume(%{
+       data: message.data,
+       metadata: %{
+         subscription: message.metadata.subscription,
+         attributes: message.metadata.attributes,
+         orderingKey: nil,
+         received_at: message.metadata.received_at
+       }
+     }) do
+  nil ->
+    # The extractor found no edge: nothing was recorded and the context
+    # was cleared, so there is no pathway to continue.
+    nil
 
-# LATER, when the message is answered, in the same process:
-data = encode(reply)
+  pathway ->
+    # LATER, when the message is answered, in the same process:
+    data = encode(reply)
 
-attributes = existing_attributes
+    attributes = existing_attributes
 
-attributes =
-  case DdDataStreams.produce("orders-out", data) do
-    [{key, value}] -> Map.put(attributes, key, value)
-    [] -> attributes
-  end
+    attributes =
+      case DdDataStreams.produce("orders-out", data) do
+        [{key, value}] -> Map.put(attributes, key, value)
+        [] -> attributes
+      end
 
-MyApp.PubSub.publish("orders-out", data, attributes: attributes)
+    MyApp.PubSub.publish("orders-out", data, attributes: attributes)
+
+    pathway
+end
 ```
 
-`consume/1` returns `nil`, and records nothing, when the extractor finds no edge
-in the metadata. It leaves the pathway in the context of the calling process; if
-the answer is produced in another process, set it there with
-`DdDataStreams.Context.put(pathway)` and pass `extractor:` to `produce/3` when
-several extractors are configured.
+`consume/1` returns `nil` when the extractor finds no edge in the metadata: it
+records nothing and clears the context, so the `nil` branch above has no
+pathway to continue. On a match it leaves the pathway in the context of the
+calling process; if the answer is produced in another process, hand the pathway
+it returned over with `DdDataStreams.Context.put(pathway)` there, and pass
+`extractor:` to `produce/3` when several extractors are configured.
 
 The metadata is the extractor's own contract: for the Pub/Sub extractor those
 are the values `BroadwayCloudPubSub` v2 exposes as
