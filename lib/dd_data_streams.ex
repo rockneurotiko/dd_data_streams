@@ -55,10 +55,10 @@ defmodule DdDataStreams do
 
     * `[:broadway, :processor, :message, :start]`, which Broadway emits once for
       each message it is about to hand to `handle_message/3`. The handler
-      records the consume checkpoint - the one checkpoint per message, whatever
-      the pipeline does with it afterwards, including a leaf consumer that
-      produces nothing - and leaves the resulting pathway in
-      `DdDataStreams.Context` for a produce call in the same stage process.
+      records the consume checkpoint - one per message that reaches
+      `handle_message/3`, including a leaf consumer that produces nothing - and
+      leaves the resulting pathway in `DdDataStreams.Context` for a produce
+      call in the same stage process.
     * `[:broadway, :batch_processor, :start]`, once per batch. The handler
       samples one of the pathways the batch's messages were consumed on and
       leaves that in `DdDataStreams.Context`, so a produce call in
@@ -69,6 +69,18 @@ defmodule DdDataStreams do
   Both handlers record only what each event is: the batch handler adds no
   consume checkpoint, because every message of the batch already got one at its
   own message event.
+
+  A message that never reaches `handle_message/3` therefore gets no consume
+  checkpoint. That happens when `prepare_messages/2` raises: Broadway marks
+  every message of the batch failed before the per-message start event
+  (`deps/broadway/lib/broadway/topology/processor_stage.ex`, the
+  `maybe_prepare_messages/2` wrapper), so the start event never fires and a
+  raise silences the checkpoint for the whole batch, not just the message that
+  raised. Marking a message failed with `Broadway.Message.failed/2` is a
+  different case: those messages still reach `handle_message/3`, so they still
+  checkpoint, and failed messages take Broadway's failed-ack path either way.
+  A redelivery is a new attempt and counts a new checkpoint; the wait is still
+  measured from the receive time, so per-attempt counting does not distort it.
 
   ## Messages the library cannot record
 
