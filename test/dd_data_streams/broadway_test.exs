@@ -538,6 +538,29 @@ defmodule DdDataStreams.BroadwayTest do
     end
   end
 
+  test "a produce with a mistyped extractor option names the option" do
+    assert_raise ArgumentError, ~r/extractor: "typo" must be a module exporting produce\/1/, fn ->
+      DdDataStreams.produce("orders", "hello", extractor: "typo")
+    end
+
+    assert_raise ArgumentError, ~r/extractor: Enum must be a module exporting produce\/1/, fn ->
+      DdDataStreams.produce("orders", "hello", extractor: Enum)
+    end
+  end
+
+  test "a produce with no extractor configured says none is configured" do
+    Application.put_env(:dd_data_streams, :extractors, [])
+
+    error =
+      assert_raise ArgumentError, fn ->
+        DdDataStreams.produce("orders", "hello")
+      end
+
+    assert error.message =~ "no extractor is configured"
+    assert error.message =~ "config :dd_data_streams, extractors:"
+    assert error.message =~ "pass `extractor: MyApp.Extractor` to DdDataStreams.produce/3"
+  end
+
   test "attaching refuses a module that is not an extractor" do
     Application.put_env(:dd_data_streams, :extractors, [Enum])
 

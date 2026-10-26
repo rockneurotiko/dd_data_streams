@@ -576,13 +576,37 @@ defmodule DdDataStreams do
   # to, so an application with several extractors has to say so once the stage
   # that is producing did not consume the message itself.
   defp produce_tags(topic, opts) do
-    (Keyword.get(opts, :extractor) || Context.get_extractor() || only_extractor!()).produce(topic)
+    extractor =
+      explicit_extractor(Keyword.get(opts, :extractor)) || Context.get_extractor() ||
+        only_extractor!()
+
+    extractor.produce(topic)
+  end
+
+  # A mistyped extractor named on the call would otherwise fail much later as a
+  # call on a non-function, so it is rejected here with the option named.
+  defp explicit_extractor(nil), do: nil
+
+  defp explicit_extractor(extractor) do
+    if is_atom(extractor) and Code.ensure_loaded?(extractor) and
+         function_exported?(extractor, :produce, 1) do
+      extractor
+    else
+      raise ArgumentError,
+            "extractor: #{inspect(extractor)} must be a module exporting produce/1"
+    end
   end
 
   defp only_extractor! do
     case extractors() do
       [extractor] ->
         extractor
+
+      [] ->
+        raise ArgumentError,
+              "no extractor is configured: set " <>
+                "`config :dd_data_streams, extractors: [MyApp.Extractor]` or pass " <>
+                "`extractor: MyApp.Extractor` to DdDataStreams.produce/3"
 
       configured ->
         raise ArgumentError,
