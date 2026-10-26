@@ -797,14 +797,29 @@ over partitions, which is what lets downstream produce edges join up.
 
 ### Latency
 
-A consume checkpoint is stamped with the time the message reached the pipeline
-(the metadata's receive time), not the time the processor picked it up. The
-consume edge therefore reports the time the message spent in the queue, not
-Broadway's own backlog. A produce checkpoint is stamped at the time of the
-produce call.
+Checkpoint times are in native time units: the consume checkpoint's
+`received_at` (the metadata's receive time) and the times stamped on produce.
 
-A message that carried no pathway starts a new one at its consume checkpoint, so
-both latencies are zero for it.
+A consume checkpoint is stamped with the time the message reached the pipeline,
+not the time the processor picked it up. The consume edge therefore reports the
+time the message spent in the queue, not Broadway's own backlog. A metadata
+that carries no receive time has it filled in with the current time before the
+checkpoint is taken, so the checkpoint reports no consume latency. A produce
+checkpoint is stamped at the time of the produce call.
+
+An extractor may additionally report the broker's publish time for a first-hop
+message, as `:pathway_start` or `:edge_start` in the parts it returns (both in
+native time units); the consume edge then reports publish-to-consume latency
+instead of zero. These starts apply only to a message that starts a pathway: a
+message carrying a pathway header keeps the start its producer wrote. A start is
+only believed inside the window from 2000-01-01 to a minute ahead of this node's
+clock — the same window the propagator applies to starts read from a header —
+and an out-of-window value falls back to the checkpoint time.
+
+A message that carried no pathway and no such publish time starts a new one at
+its consume checkpoint, so both latencies are zero for it. A redelivery is a
+new attempt: every one that reaches `handle_message/3` records its own
+checkpoint, with the wait still measured from the receive time.
 
 ### Payload size
 
