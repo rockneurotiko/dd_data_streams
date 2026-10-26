@@ -14,12 +14,14 @@ statistics to the Datadog Agent.
 
 It is a library, not an integration package: it has no dependency on Broadway
 and none on any broker client. It hangs itself on the telemetry events Broadway
-already emits, so it works with any producer, and the two things that are
-broker-specific - what a message's metadata says about the edge it arrived on,
-and the `type:` technology to report - are one module behind
-`DdDataStreams.Extractor`. One extractor is provided for
-`BroadwayCloudPubSub` v2; any other broker is one small module of your own, and
-an application can list several to run pipelines on more than one bus at once.
+already emits, so the pathway and propagation layer works with any producer,
+and the two things that are broker-specific - what a message's metadata says
+about the edge it arrived on, and the `type:` technology to report - are one
+module behind `DdDataStreams.Extractor`. That layer ships one extractor today,
+for `BroadwayCloudPubSub` v2: tagging a message from any other broker needs an
+extractor module of your own (the carriers `Flat` and `Sqs` are provided), and
+an application can list several extractors to run pipelines on more than one bus
+at once. [Broker support](#broker-support) says exactly what ships.
 
 [dsm]: https://docs.datadoghq.com/data_streams/
 [broadway]: https://hexdocs.pm/broadway
@@ -60,6 +62,25 @@ an application can list several to run pipelines on more than one bus at once.
 * `DdDataStreams.Transport`: the behaviour for posting to the Agent, with a Req
   implementation as the default and a `DdDataStreams.Transport.Capture`
   implementation for tests.
+
+## Broker support
+
+What actually ships, as opposed to what the library's design allows. Each cell
+names the module or the test that proves it, so the table stays true as those
+change.
+
+| Broker | Shipped extractor | Carrier | Tested package / version | Status & known limits |
+| --- | --- | --- | --- | --- |
+| Google Pub/Sub | `DdDataStreams.Extractor.GooglePubSub`, the default (`lib/dd_data_streams/extractor/google_pub_sub.ex`) | `DdDataStreams.Carrier.Flat` - attribute maps, header lists, AMQP 3-tuples | `broadway_cloud_pub_sub ~> 2.0.0-rc.2` (`e2e/mix.exs`); `test/dd_data_streams/google_pub_sub_test.exs`, `test/integration/pubsub_emulator_test.exs` | Shipped and tested. Consume checkpoints need 2.0.0-rc or newer: on stable 1.0.0 the metadata carries no `:subscription`, so nothing is recorded. |
+| Amazon SQS | none - in development | `DdDataStreams.Carrier.Sqs`, unit-tested in `test/dd_data_streams/carrier_test.exs` | carrier unit tests only; no BroadwaySQS dependency | The [`_datadog` wrapping](#sqs-wrapping) works today; automatic tagging does not - with no extractor a pipeline records no consume checkpoints. |
+| Kafka | none - in development | `DdDataStreams.Carrier.Flat` - header lists | none; no Kafka client is a dependency | Extractor work in progress; propagation over headers is ready, tagging is not. |
+| RabbitMQ | none - in development | `DdDataStreams.Carrier.Flat` - header lists | none; no RabbitMQ client is a dependency | Extractor work in progress; propagation over headers is ready, tagging is not. |
+
+Ground truth is the tree itself: [`lib/dd_data_streams/extractor/`](lib/dd_data_streams/extractor/)
+lists every shipped extractor, [`lib/dd_data_streams/carrier/`](lib/dd_data_streams/carrier/)
+every shipped carrier, and [`mix.exs`](mix.exs) has no broker client as a
+dependency - so a row names a tested package only where a test actually runs
+against it.
 
 ## SQS wrapping
 
@@ -328,8 +349,11 @@ end
   the consumed messages. Fan-in keeps one pathway, not a join of all of them.
 
 Both events are emitted by Broadway itself, for every producer, so a pipeline
-that runs on Kafka, SQS, RabbitMQ or anything else is attached the same way. The
-only thing that changes is the extractors.
+that runs on Kafka, SQS, RabbitMQ or anything else is attached the same way.
+What changes is how messages are tagged: Pub/Sub is the only shipped extractor
+(see [Broker support](#broker-support)), so another broker needs an extractor
+module of your own before checkpoints are recorded, and SQS additionally needs
+the `_datadog` wrapping described under [SQS wrapping](#sqs-wrapping).
 
 Calling `attach/0` twice is harmless: telemetry keeps one handler per id, so a
 hot code upgrade does not double the checkpoints.
@@ -381,8 +405,13 @@ so the default extractor returns `:error` for every message and a v1 pipeline
 records nothing.
 
 Another broker is one module implementing `DdDataStreams.Extractor`. Its
-moduledoc has a `BroadwayKafka` example: the same three lines of metadata
-mapping, and the `type:` Datadog files those streams under.
+moduledoc has a `BroadwayKafka` example: the metadata mapping, and the `type:`
+Datadog files those streams under. How much mapping that is depends on the
+broker: when the metadata alone names the edge it is those few lines, but a
+broker whose edge lives in the producer's configuration instead (the SQS
+queue, the Kafka consumer group) implements `consume/2` and takes the edge name
+from `producer_info`, and SQS additionally needs the `_datadog` wrapping
+under [SQS wrapping](#sqs-wrapping).
 
 On the produce side there is no metadata to look at, only a topic, so a produce
 is reported by the extractor that consumed the message being answered. A stage
@@ -973,6 +1002,9 @@ identity.
   that produces without consuming, or that publishes to a different bus than it
   consumed from, says which extractor by passing `extractor:` to
   `DdDataStreams.produce/3`.
+* Google Pub/Sub is the only shipped, tested extractor. Every other broker
+  needs an extractor module of your own before a consume checkpoint is
+  recorded (see [Broker support](#broker-support)).
 * This is Data Streams Monitoring only: no APM traces, backlogs or transactions
   are collected.
 * The Agent must be reachable over HTTP; Unix domain sockets are not supported.
