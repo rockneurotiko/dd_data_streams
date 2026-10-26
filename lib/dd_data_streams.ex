@@ -11,16 +11,20 @@ defmodule DdDataStreams do
   transport live in the modules it calls.
 
   Nothing here is specific to one broker, or to one broker per application. The
-  library hangs itself on the telemetry events Broadway already emits, so it
-  works with any producer, and the parts that are broker-specific - what a
-  message's metadata says about the edge it arrived on, and which technology to
-  report - are modules behind `DdDataStreams.Extractor`:
+  library hangs itself on the telemetry events Broadway already emits, so the
+  pathway and propagation layer works with any producer, and the parts that are
+  broker-specific - what a message's metadata says about the edge it arrived
+  on, and which technology to report - are modules behind
+  `DdDataStreams.Extractor`:
 
       config :dd_data_streams, extractors: [MyApp.KafkaExtractor, DdDataStreams.Extractor.GooglePubSub]
 
   A message is named by the first configured extractor that recognises its
   metadata, so an application can run a Kafka pipeline and a Pub/Sub pipeline
-  side by side.
+  side by side. One extractor ships today -
+  `DdDataStreams.Extractor.GooglePubSub` - so tagging a message from any other
+  broker needs an extractor module of your own; the carriers `Flat` and `Sqs`
+  ship as well.
 
   ## Using it in a Broadway pipeline
 
