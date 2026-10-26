@@ -14,7 +14,8 @@ defmodule DdDataStreams.Extractor.SQS do
   different edges. A `.fifo` suffix stays in the name, as the official tracers
   report it. A message delivered by any other producer, a producer without a
   usable `:queue_url`, or a hand-called `consume/2` with no producer names no
-  edge and records nothing.
+  edge and records nothing. Checked against the source of `BroadwaySQS` 1.0.1
+  and the AWS API reference, not against a live queue.
 
   The produce edge is named by the topic the host passes to
   `DdDataStreams.produce/3`: either the queue URL or the bare queue name, which

@@ -257,6 +257,13 @@ every shipped carrier, and [`mix.exs`](mix.exs) has no broker client as a
 dependency - so a row names a tested package only where a test actually runs
 against it.
 
+The Kafka, SQS and RabbitMQ rows are unit-tested against metadata captured from
+the version each names: the mapping from that package's metadata to edge tags
+is checked, but nothing in those three has been run against a live broker. A
+live-broker pass needs the broker, and for SQS and Kafka a real client, none of
+which this repository's suite has. Treat their tag sets as derived from the
+producers' sources and the official tracers, not as observed end to end.
+
 ### Google Pub/Sub
 
 The default extractor, `DdDataStreams.Extractor.GooglePubSub`, applies when
@@ -296,8 +303,15 @@ the default.
 The record timestamp is a publish time, so a first-hop message measures from it
 and the consume latency does not include Broadway's buffer. `partition` and
 `offset` are deliberately not tags: a per-partition tag would name whichever
-partition arrived first. What this cannot report, and why, is in the module's
-moduledoc.
+partition arrived first.
+
+One tag the official tracers report is missing: `kafka_cluster_id`. Nothing in
+the record carries it, and it cannot be handed in through the producer either,
+because BroadwayKafka rejects options it does not know. A node of this library
+therefore differs from a Java or Go tracer node that reports a cluster id, and
+the two do not join up; the pathway still connects through the header, so
+latency and throughput are measured across them. The module's moduledoc states
+the rest of what this cannot report.
 
 ### Amazon SQS
 

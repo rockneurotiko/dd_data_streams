@@ -11,7 +11,9 @@ defmodule DdDataStreams.Extractor.RabbitMQ do
   queue bound to several exchanges would be split into several nodes. dd-trace-java
   and dd-trace-py name the edge by the queue as well. A producer configured with
   a server-named queue (`queue: ""`) names no edge, because the real name is
-  never visible to the pipeline.
+  never visible to the pipeline. Checked against the source of
+  `BroadwayRabbitMQ` 0.8.2, `amqp` and the AMQP 0-9-1 specification, not against
+  a live broker.
 
   ## Edges
 
