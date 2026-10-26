@@ -34,7 +34,7 @@ defmodule DdDataStreams.Context do
   produces outside the message it consumed.
   """
 
-  alias DdDataStreams.Pathway
+  alias DdDataStreams.{Extractor, Pathway}
 
   @pathway_key :dd_data_streams_pathway
 
@@ -59,6 +59,12 @@ defmodule DdDataStreams.Context do
   @spec put(Pathway.t(), module() | nil) :: :ok
   def put(%Pathway{} = pathway, extractor) do
     Process.put(@pathway_key, %{pathway | extractor: extractor})
+    :ok
+  end
+
+  @spec put(Pathway.t(), module() | nil, Extractor.producer_info() | nil) :: :ok
+  def put(%Pathway{} = pathway, extractor, producer_info) do
+    Process.put(@pathway_key, %{pathway | extractor: extractor, producer_info: producer_info})
     :ok
   end
 
@@ -87,6 +93,33 @@ defmodule DdDataStreams.Context do
     case get() do
       %Pathway{extractor: extractor} -> extractor
       _ -> nil
+    end
+  end
+
+  @doc """
+  Returns the producer info of the message the current pathway was consumed
+  with, or `%{producer: nil, topology: nil}` when this process has no pathway
+  or its pathway was set without one.
+
+  This is what `DdDataStreams.produce/3` gives the extractor for the outgoing
+  edge, so a produce can report identity from the same producer configuration
+  the consume side saw.
+
+      iex> DdDataStreams.Context.put(%DdDataStreams.Pathway{hash: 7}, Enum, %{producer: {MyProducer, []}, topology: MyPipeline})
+      iex> DdDataStreams.Context.get_producer_info()
+      %{producer: {MyProducer, []}, topology: MyPipeline}
+
+      iex> DdDataStreams.Context.clear()
+      :ok
+      iex> DdDataStreams.Context.get_producer_info()
+      %{producer: nil, topology: nil}
+
+  """
+  @spec get_producer_info() :: Extractor.producer_info()
+  def get_producer_info do
+    case get() do
+      %Pathway{producer_info: producer_info} when not is_nil(producer_info) -> producer_info
+      _ -> %{producer: nil, topology: nil}
     end
   end
 

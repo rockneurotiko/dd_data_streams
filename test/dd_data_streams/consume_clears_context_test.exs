@@ -68,5 +68,6 @@ defmodule DdDataStreams.ConsumeClearsContextTest.Extractor do
   def consume(_metadata), do: :error
 
   @impl true
-  def produce(topic), do: ["direction:out", "topic:" <> topic, "type:google-pubsub"]
+  def produce(topic, _producer_info),
+    do: ["direction:out", "topic:" <> topic, "type:google-pubsub"]
 end

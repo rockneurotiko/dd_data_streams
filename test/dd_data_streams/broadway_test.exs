@@ -484,7 +484,10 @@ defmodule DdDataStreams.BroadwayTest do
         "google-pubsub"
       end
 
-    assert Enum.any?(extractor.produce("orders-out"), &(&1 == "type:" <> expected_type))
+    assert Enum.any?(
+             extractor.produce("orders-out", Context.get_producer_info()),
+             &(&1 == "type:" <> expected_type)
+           )
   end
 
   test "fan-in keeps the sampled pathway and its extractor together (pubsub first)" do
@@ -521,7 +524,10 @@ defmodule DdDataStreams.BroadwayTest do
         "google-pubsub"
       end
 
-    assert Enum.any?(extractor.produce("orders-out"), &(&1 == "type:" <> expected_type))
+    assert Enum.any?(
+             extractor.produce("orders-out", Context.get_producer_info()),
+             &(&1 == "type:" <> expected_type)
+           )
   end
 
   test "replacing a message's metadata leaves fan-in parentless" do
@@ -561,11 +567,11 @@ defmodule DdDataStreams.BroadwayTest do
   end
 
   test "a produce with a mistyped extractor option names the option" do
-    assert_raise ArgumentError, ~r/extractor: "typo" must be a module exporting produce\/1/, fn ->
+    assert_raise ArgumentError, ~r/extractor: "typo" must be a module exporting produce\/2/, fn ->
       DdDataStreams.produce("orders", "hello", extractor: "typo")
     end
 
-    assert_raise ArgumentError, ~r/extractor: Enum must be a module exporting produce\/1/, fn ->
+    assert_raise ArgumentError, ~r/extractor: Enum must be a module exporting produce\/2/, fn ->
       DdDataStreams.produce("orders", "hello", extractor: Enum)
     end
   end
@@ -636,6 +642,44 @@ defmodule DdDataStreams.BroadwayTest do
 
     assert_receive {:checkpoint, _checkpoint}
     assert_receive {:producer_info, %{producer: nil, topology: nil}, %{}}
+  end
+
+  test "the produce edge reports identity from the producer the stage consumed with" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.ProducerAwareExtractor
+    ])
+
+    assert %Pathway{} =
+             DdDataStreams.consume(%{
+               data: "hello",
+               metadata: %{
+                 producer:
+                   {DdDataStreams.BroadwayTest.FakeProducer, [kafka_cluster_id: "cluster-1"]}
+               }
+             })
+
+    # Drain the consume checkpoint.
+    assert_receive {:checkpoint, _consume}
+
+    assert [{key, _value}] = DdDataStreams.produce("orders", "payload")
+    assert key == "dd-pathway-ctx-base64"
+
+    assert_receive {:checkpoint, produce_checkpoint}
+    assert "kafka_cluster_id:cluster-1" in produce_checkpoint.tags
+  end
+
+  test "a produce with no producer info still reports the edge" do
+    Application.put_env(:dd_data_streams, :extractors, [
+      DdDataStreams.BroadwayTest.ProducerAwareExtractor
+    ])
+
+    # Nothing was consumed in this stage, so the extractor is given both fields
+    # nil and names the edge from the topic alone.
+    assert [{key, _value}] = DdDataStreams.produce("orders", "payload")
+    assert key == "dd-pathway-ctx-base64"
+
+    assert_receive {:checkpoint, produce_checkpoint}
+    assert produce_checkpoint.tags == ["direction:out", "topic:orders", "type:test-broker"]
   end
 
   test "a message without a subscription records nothing" do
@@ -850,7 +894,22 @@ defmodule DdDataStreams.BroadwayTest.ProducerAwareExtractor do
     {:ok, ["direction:in", "type:test-broker"], %{}}
   end
 
-  def produce(topic), do: ["direction:out", "topic:" <> topic, "type:test-broker"]
+  def produce(topic, producer_info) do
+    tags = ["direction:out", "topic:" <> topic, "type:test-broker"]
+
+    # Produce tags can carry identity from the producer's configuration, so the
+    # cluster id a Kafka-shaped extractor would report travels with the edge.
+    case producer_info do
+      %{producer: {_module, opts}} when is_list(opts) ->
+        case Keyword.fetch(opts, :kafka_cluster_id) do
+          {:ok, cluster} -> tags ++ ["kafka_cluster_id:" <> cluster]
+          :error -> tags
+        end
+
+      _no_producer ->
+        tags
+    end
+  end
 end
 
 defmodule DdDataStreams.BroadwayTest.KafkaExtractor do
@@ -875,7 +934,7 @@ defmodule DdDataStreams.BroadwayTest.KafkaExtractor do
   def consume(_metadata), do: :error
 
   @impl true
-  def produce(topic), do: ["direction:out", "topic:" <> topic, "type:kafka"]
+  def produce(topic, _producer_info), do: ["direction:out", "topic:" <> topic, "type:kafka"]
 
   defp received_at(%{ts: milliseconds}) when is_integer(milliseconds),
     do: System.convert_time_unit(milliseconds, :millisecond, :native)

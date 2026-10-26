@@ -283,5 +283,6 @@ defmodule DdDataStreams.HandlerSafetyTest.Configurable do
   end
 
   @impl true
-  def produce(topic), do: ["direction:out", "topic:" <> topic, "type:google-pubsub"]
+  def produce(topic, _producer_info),
+    do: ["direction:out", "topic:" <> topic, "type:google-pubsub"]
 end

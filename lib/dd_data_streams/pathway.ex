@@ -29,7 +29,8 @@ defmodule DdDataStreams.Pathway do
           hash: non_neg_integer(),
           pathway_start: non_neg_integer(),
           edge_start: non_neg_integer(),
-          extractor: module() | nil
+          extractor: module() | nil,
+          producer_info: DdDataStreams.Extractor.producer_info() | nil
         }
 
   @typedoc """
@@ -54,6 +55,7 @@ defmodule DdDataStreams.Pathway do
             pathway_start: 0,
             edge_start: 0,
             extractor: nil,
+            producer_info: nil,
             previous_direction: nil,
             closest_opposite_direction_hash: 0,
             closest_opposite_direction_edge_start: 0
@@ -76,6 +78,7 @@ defmodule DdDataStreams.Pathway do
       pathway_start: Map.get(fields, :pathway_start, 0),
       edge_start: Map.get(fields, :edge_start, 0),
       extractor: Map.get(fields, :extractor, nil),
+      producer_info: Map.get(fields, :producer_info, nil),
       previous_direction: Map.get(fields, :previous_direction, nil),
       closest_opposite_direction_hash: Map.get(fields, :closest_opposite_direction_hash, 0),
       closest_opposite_direction_edge_start:

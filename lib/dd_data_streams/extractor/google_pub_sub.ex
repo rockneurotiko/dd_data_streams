@@ -38,7 +38,7 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
   end
 
   @impl true
-  def produce(topic), do: tags("out", "topic:" <> short_id(topic))
+  def produce(topic, _producer_info), do: tags("out", "topic:" <> short_id(topic))
 
   # The short id is the last segment of a resource name, and the whole value
   # when it carries no slashes.

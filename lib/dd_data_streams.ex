@@ -253,9 +253,9 @@ defmodule DdDataStreams do
         Context.clear()
         nil
 
-      {extractor, {pathway, checkpoint}} ->
+      {pathway, checkpoint} ->
         Aggregator.add(checkpoint)
-        Context.put(pathway, extractor)
+        Context.put(pathway)
 
         pathway
     end
@@ -308,7 +308,11 @@ defmodule DdDataStreams do
   The edge tags come from the extractor that named the consume edge of the
   message being answered, which is the one `attach/0` left in the context, so a
   pipeline that consumes and produces on the same technology needs nothing more.
-  A pipeline that changes technology - consuming from Kafka and publishing to
+  That extractor also receives the producer info of the message being answered,
+  so identity kept in the producer's configuration - a Kafka cluster id, a
+  RabbitMQ exchange - can be reported on the produce edge; a stage that
+  produces without consuming passes both fields nil. A pipeline that changes
+  technology - consuming from Kafka and publishing to
   Pub/Sub - names the outgoing one, because the topic alone does not say which
   bus it goes to:
 
@@ -472,24 +476,25 @@ defmodule DdDataStreams do
         |> Enum.map(&checkpointed(&1, topology))
         |> Enum.reject(&is_nil/1)
 
-      # Sample one consumed message's pathway and extractor together, so a
-      # mixed-broker batch cannot pair one broker's pathway with another's
-      # extractor. Fan-in re-derives consume checkpoints from the batch
-      # messages' metadata, so a handle_message/3 that replaces metadata
-      # entirely leaves the batch parentless (documented as unsupported).
-      {pathway, extractor} =
+      # Sample one consumed message's pathway, with the extractor and producer
+      # info it was consumed with, so a mixed-broker batch cannot pair one
+      # broker's pathway with another's identity. Fan-in re-derives consume
+      # checkpoints from the batch messages' metadata, so a handle_message/3
+      # that replaces metadata entirely leaves the batch parentless (documented
+      # as unsupported).
+      pathway =
         case resolved do
           [] ->
-            {Pathway.merge([]), nil}
+            Pathway.merge([])
 
           _ ->
-            {extractor, {pathway, _checkpoint}} = Enum.random(resolved)
-            {pathway, extractor}
+            {sampled, _checkpoint} = Enum.random(resolved)
+            sampled
         end
 
-      # The batch stage is another process, so it needs the extractor the sampled
-      # message was consumed with for its own produce edges.
-      Context.put(pathway, extractor)
+      # The batch stage is another process, so it needs the extractor and the
+      # producer info of the sampled message for its own produce edges.
+      Context.put(pathway)
     rescue
       error -> skipped(@fan_in_event, error, __STACKTRACE__)
     catch
@@ -530,8 +535,10 @@ defmodule DdDataStreams do
     Map.merge(%{event: nil, extractor: nil, reason: nil, stacktrace: nil}, metadata)
   end
 
-  # The consume checkpoint of a message together with the extractor that named it.
-  # Every configured extractor is asked in order, and the first one that
+  # The consume checkpoint of a message together with the pathway fields a
+  # produce in the same stage reports from: the extractor that named the edge
+  # and the producer that delivered the message. Every configured extractor is
+  # asked in order, and the first one that
   # recognises the metadata wins; recording is the caller's business, so the
   # batch handler can reuse this without counting a message twice.
   defp checkpointed(%{data: data, metadata: metadata}, topology) when is_map(metadata) do
@@ -565,14 +572,17 @@ defmodule DdDataStreams do
   defp extractor_checkpoint(extractor, data, metadata, producer_info) do
     case edge(extractor, metadata, producer_info) do
       {:ok, tags, parts} ->
-        checkpoint =
+        {pathway, checkpoint} =
           Checkpoints.consume(
             Map.put(parts, :data, data),
             Enum.filter(tags, &is_binary/1),
             received_at(parts)
           )
 
-        {extractor, checkpoint}
+        # The extractor and the producer that delivered the message ride on the
+        # pathway, so a produce in this stage reports the outgoing edge with the
+        # identity the consume side saw.
+        {%{pathway | extractor: extractor, producer_info: producer_info}, checkpoint}
 
       :error ->
         nil
@@ -709,7 +719,7 @@ defmodule DdDataStreams do
       explicit_extractor(Keyword.get(opts, :extractor)) || Context.get_extractor() ||
         only_extractor!()
 
-    extractor.produce(topic)
+    extractor.produce(topic, Context.get_producer_info())
   end
 
   # A mistyped extractor named on the call would otherwise fail much later as a
@@ -718,11 +728,11 @@ defmodule DdDataStreams do
 
   defp explicit_extractor(extractor) do
     if is_atom(extractor) and Code.ensure_loaded?(extractor) and
-         function_exported?(extractor, :produce, 1) do
+         function_exported?(extractor, :produce, 2) do
       extractor
     else
       raise ArgumentError,
-            "extractor: #{inspect(extractor)} must be a module exporting produce/1"
+            "extractor: #{inspect(extractor)} must be a module exporting produce/2"
     end
   end
 
@@ -748,7 +758,7 @@ defmodule DdDataStreams do
     valid? = fn module ->
       Code.ensure_loaded?(module) and
         (function_exported?(module, :consume, 1) or function_exported?(module, :consume, 2)) and
-        function_exported?(module, :produce, 1)
+        function_exported?(module, :produce, 2)
     end
 
     case configured do

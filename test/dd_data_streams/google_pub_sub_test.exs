@@ -33,12 +33,15 @@ defmodule DdDataStreams.Extractor.GooglePubSubTest do
   end
 
   test "a topic resource name is reduced to its short id" do
-    assert GooglePubSub.produce("projects/my-project/topics/orders") ==
+    assert GooglePubSub.produce("projects/my-project/topics/orders", %{
+             producer: nil,
+             topology: nil
+           }) ==
              ["direction:out", "topic:orders", "type:google-pubsub"]
   end
 
   test "an already-short topic is reported as it is" do
-    assert GooglePubSub.produce("orders") == [
+    assert GooglePubSub.produce("orders", %{producer: nil, topology: nil}) == [
              "direction:out",
              "topic:orders",
              "type:google-pubsub"

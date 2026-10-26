@@ -28,8 +28,9 @@ defmodule DdDataStreams.Extractor do
   when the metadata names no edge - the library then records nothing for that
   message rather than inventing a node. An extractor that raises is treated
   like one that named no edge, and the reason is logged and reported as a
-  `[:dd_data_streams, :handler, :error]` telemetry event. `c:produce/1` gets
-  the topic a message is published to and returns the produce edge tags.
+  `[:dd_data_streams, :handler, :error]` telemetry event. `c:produce/2` gets
+  the topic a message is published to and the `t:producer_info/0`, and returns
+  the produce edge tags.
 
   `c:consume/1` is enough when the metadata alone names the edge. Some brokers
   keep the edge identity in the producer's configuration instead - the SQS
@@ -72,7 +73,8 @@ defmodule DdDataStreams.Extractor do
         def consume(_metadata), do: :error
 
         @impl true
-        def produce(topic), do: ["direction:out", "topic:" <> topic, "type:kafka"]
+        def produce(topic, _producer_info),
+          do: ["direction:out", "topic:" <> topic, "type:kafka"]
       end
 
   The record timestamp the example reads is one of several publish times a
@@ -88,10 +90,14 @@ defmodule DdDataStreams.Extractor do
   `group:`, adds them here; the keys in `DdDataStreams.Tags` decide whether they
   take part in the node's identity or only split its statistics.
 
-  `c:produce/1` has no metadata to look at, so it names every edge it is asked
-  about. A produce in a stage that consumed a message is named by the extractor
-  that consumed it, and a stage that produces without consuming passes its
-  extractor to `DdDataStreams.produce/3`.
+  `c:produce/2` has no message metadata to look at, so it names every edge it
+  is asked about. It does receive the `t:producer_info/0` of the message the
+  stage is answering - the same one `c:consume/2` gets - so identity kept in
+  the producer's configuration, such as a cluster id or an exchange, can still
+  reach the produce tags; a stage that produces without consuming gets both
+  fields nil. A produce in a stage that consumed a message is named by the
+  extractor that consumed it, and a stage that produces without consuming
+  passes its extractor to `DdDataStreams.produce/3`.
   """
 
   @typedoc """
@@ -103,7 +109,7 @@ defmodule DdDataStreams.Extractor do
   @type tags :: [String.t()]
 
   @typedoc """
-  What delivered the message, for `c:consume/2`.
+  What delivered the message, for `c:consume/2` and `c:produce/2`.
 
     * `:producer` - the Broadway producer as `{module, opts}`, the value the
       producer stamped into the message's metadata under `:producer`; `nil`
@@ -171,8 +177,13 @@ defmodule DdDataStreams.Extractor do
 
   @doc """
   The produce edge of a message published to `topic`.
+
+  `producer_info` is what delivered the message this produce answers: the same
+  `t:producer_info/0` `c:consume/2` receives, so an extractor can report
+  identity from the producer's configuration on the produce edge too. A stage
+  that produces without consuming passes both fields nil.
   """
-  @callback produce(topic :: String.t()) :: tags()
+  @callback produce(topic :: String.t(), producer_info :: producer_info()) :: tags()
 
   @optional_callbacks consume: 2
 end
