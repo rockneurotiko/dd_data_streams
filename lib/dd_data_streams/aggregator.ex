@@ -24,7 +24,11 @@ defmodule DdDataStreams.Aggregator do
   A bucket is removed before it is sent, so a failed send drops it: it is
   counted in
   `[:dd_data_streams, :flush, :error]` telemetry with a `count` measurement,
-  and nothing is raised. Stopping the process sends everything,
+  and nothing is raised. A successful send is counted in
+  `[:dd_data_streams, :flush, :stop]` telemetry with the buckets and points it
+  carried, and a bucket dropped because its start sits beyond the clock-skew
+  horizon is counted in the same event by its `dropped` points. Stopping the
+  process sends everything,
   including the partial bucket, unless the agent has not answered within ten
   seconds, in which case the send is abandoned and the node keeps shutting
   down.
@@ -59,7 +63,9 @@ defmodule DdDataStreams.Aggregator do
   @shutdown_flush_ms 10_000
   @headers [{"content-type", "application/msgpack"}, {"content-encoding", "gzip"}]
   @error_event [:dd_data_streams, :flush, :error]
+  @stop_event [:dd_data_streams, :flush, :stop]
   @invalid_event [:dd_data_streams, :checkpoint, :invalid]
+  @skip_event [:dd_data_streams, :checkpoint, :skip]
 
   @doc """
   Starts the aggregator under its registered name.
@@ -77,13 +83,22 @@ defmodule DdDataStreams.Aggregator do
 
   Takes the map `DdDataStreams.Pathway.set_checkpoint/3` returns, with an
   optional `:payload_size` in bytes. Does nothing when the aggregator is not
-  running, which is the case while the library is disabled.
+  running, which is the case while the library is disabled; that skip is
+  reported in `[:dd_data_streams, :checkpoint, :skip]` telemetry.
   """
   @spec add(Pathway.checkpoint()) :: :ok
   def add(checkpoint) when is_map(checkpoint) do
     case Process.whereis(__MODULE__) do
-      nil -> :ok
-      pid -> GenServer.cast(pid, {:add, checkpoint})
+      nil ->
+        :telemetry.execute(@skip_event, %{count: 1}, %{
+          reason: :aggregator_not_running,
+          extractors: nil
+        })
+
+        :ok
+
+      pid ->
+        GenServer.cast(pid, {:add, checkpoint})
     end
   end
 
@@ -292,14 +307,16 @@ defmodule DdDataStreams.Aggregator do
 
     # A checkpoint stamped far in the future (a replayed message, a skewed clock)
     # would never become due and would be held until the process stops.
-    buckets = Map.reject(buckets, fn {{_f, _s, start}, _} -> start > horizon end)
+    {future, buckets} = Map.split_with(buckets, fn {{_f, _s, start}, _} -> start > horizon end)
+    dropped(future)
 
     transport = Config.transport()
 
     due
     |> Enum.group_by(fn {{_family, service, _start}, _points} -> service end)
     |> Enum.each(fn {service, entries} ->
-      post(transport, service, build_payload(service, entries))
+      counts = %{buckets: length(entries), points: points_count(entries), dropped: 0}
+      post(transport, service, build_payload(service, entries), counts)
     end)
 
     %{state | buckets: buckets}
@@ -338,14 +355,14 @@ defmodule DdDataStreams.Aggregator do
     end)
   end
 
-  defp post(nil, service, _payload), do: failed(service, :no_transport)
+  defp post(nil, service, _payload, _counts), do: failed(service, :no_transport)
 
-  defp post(transport, service, payload) do
+  defp post(transport, service, payload, counts) do
     body = Payload.encode(payload) |> IO.iodata_to_binary() |> :zlib.gzip()
     url = Config.agent_url() <> "/v0.1/pipeline_stats"
 
     case transport.post(url, @headers, body) do
-      {:ok, status} when status < 400 -> :ok
+      {:ok, status} when status < 400 -> flushed(service, counts)
       {:ok, status} -> failed(service, {:http_status, status})
       {:error, reason} -> failed(service, reason)
       other -> failed(service, {:unexpected_response, other})
@@ -354,6 +371,31 @@ defmodule DdDataStreams.Aggregator do
     error -> failed(service, error)
   catch
     kind, reason -> failed(service, {kind, reason})
+  end
+
+  defp flushed(service, counts) do
+    :telemetry.execute(@stop_event, counts, %{service: service, reason: nil})
+
+    :ok
+  end
+
+  # A bucket beyond the horizon never becomes due; the points it carried are
+  # counted as dropped so the loss is observable.
+  defp dropped(future) when map_size(future) == 0, do: :ok
+
+  defp dropped(future) do
+    :telemetry.execute(@stop_event, %{buckets: 0, points: 0, dropped: points_count(future)}, %{
+      service: nil,
+      reason: :future_bucket
+    })
+
+    :ok
+  end
+
+  defp points_count(entries) do
+    Enum.reduce(entries, 0, fn {{_family, _service, _start}, points}, total ->
+      total + map_size(points)
+    end)
   end
 
   defp failed(service, reason) do

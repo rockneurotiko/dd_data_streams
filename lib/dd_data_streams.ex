@@ -100,6 +100,7 @@ defmodule DdDataStreams do
   @fan_in_event [:broadway, :batch_processor, :start]
   @events [@consume_event, @fan_in_event]
   @error_event [:dd_data_streams, :handler, :error]
+  @skip_event [:dd_data_streams, :checkpoint, :skip]
 
   @default_extractors [DdDataStreams.Extractor.GooglePubSub]
   @extractors_key :extractors
@@ -217,7 +218,10 @@ defmodule DdDataStreams do
 
   Returns `nil` when the extractor finds no edge in the metadata - a message
   with no subscription, no topic, nothing to report it under - and records
-  nothing in that case. It also clears the process context, so a later
+  nothing in that case; the miss is reported as a
+  `[:dd_data_streams, :checkpoint, :skip]` telemetry event whose `:extractors`
+  metadata is the configured list that was asked. It also clears the process
+  context, so a later
   `produce/3` cannot chain onto the previous message's pathway. An extractor
   that raises is treated the same way, and
   the reason is logged and reported as a `[:dd_data_streams, :handler, :error]`
@@ -513,25 +517,43 @@ defmodule DdDataStreams do
   # recognises the metadata wins; recording is the caller's business, so the
   # batch handler can reuse this without counting a message twice.
   defp checkpointed(%{data: data, metadata: metadata}) when is_map(metadata) do
-    Enum.find_value(extractors(), fn extractor ->
-      case edge(extractor, metadata) do
-        {:ok, tags, parts} ->
-          checkpoint =
-            Checkpoints.consume(
-              Map.put(parts, :data, data),
-              Enum.filter(tags, &is_binary/1),
-              received_at(parts)
-            )
+    extractors = extractors()
 
-          {extractor, checkpoint}
+    case Enum.find_value(extractors, &extractor_checkpoint(&1, data, metadata)) do
+      nil ->
+        # No extractor names an edge for the message: nothing is recorded, and
+        # the miss is reported so the drop is observable without a log line
+        # per message.
+        :telemetry.execute(@skip_event, %{count: 1}, %{
+          reason: :no_extractor_match,
+          extractors: extractors
+        })
 
-        :error ->
-          nil
-      end
-    end)
+        nil
+
+      found ->
+        found
+    end
   end
 
   defp checkpointed(_message), do: nil
+
+  defp extractor_checkpoint(extractor, data, metadata) do
+    case edge(extractor, metadata) do
+      {:ok, tags, parts} ->
+        checkpoint =
+          Checkpoints.consume(
+            Map.put(parts, :data, data),
+            Enum.filter(tags, &is_binary/1),
+            received_at(parts)
+          )
+
+        {extractor, checkpoint}
+
+      :error ->
+        nil
+    end
+  end
 
   # An extractor is the application's own code: it may raise, and it may hand
   # back a shape the library cannot use. Both mean this extractor names no edge

@@ -13,6 +13,9 @@ defmodule DdDataStreams.Carrier.Flat do
   @impl true
   def get(carrier, key), do: Propagator.get(carrier, key)
 
+  @impl true
+  def fetch(carrier, key), do: Propagator.fetch(carrier, key)
+
   def put(carrier, pathway), do: Propagator.put(carrier, pathway)
 
   @impl true

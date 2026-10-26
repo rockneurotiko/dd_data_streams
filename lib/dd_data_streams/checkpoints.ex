@@ -70,7 +70,11 @@ defmodule DdDataStreams.Checkpoints do
   A pathway with hash zero has never been checkpointed, and its first
   checkpoint starts it at the checkpoint time. Malformed input is not an error:
   an undecodable, truncated or non-base64 header is ignored and the message is
-  consumed on a new pathway, as dd-trace-java does.
+  consumed on a new pathway, as dd-trace-java does. A header that is present
+  but cannot be decoded is reported as a
+  `[:dd_data_streams, :checkpoint, :skip]` telemetry event with reason
+  `:malformed_header`, so a consumer can tell a header that was lost or broken
+  on the way from the ordinary start of a new pathway.
 
   `produce/3` returns the pathway the caller encodes into the message. When one
   consumed message produces several messages, as a batch producer does, pass the
@@ -80,6 +84,8 @@ defmodule DdDataStreams.Checkpoints do
   """
 
   alias DdDataStreams.{Carrier, Config, Pathway}
+
+  @skip_event [:dd_data_streams, :checkpoint, :skip]
 
   @type message :: %{
           required(:data) => binary(),
@@ -105,7 +111,7 @@ defmodule DdDataStreams.Checkpoints do
   def consume(%{data: _} = message, tags, received_at)
       when is_list(tags) and is_integer(received_at) do
     {_field, carrier} = carrier(message)
-    pathway = Carrier.get(carrier, Config.header()) || Pathway.new(%{})
+    pathway = continued(Carrier.fetch(carrier, Config.header()))
 
     {pathway, checkpoint} =
       Pathway.set_checkpoint(pathway, tags,
@@ -186,6 +192,19 @@ defmodule DdDataStreams.Checkpoints do
     bytes(Map.get(message, :data)) +
       bytes(Map.get(message, :ordering_key)) +
       Carrier.size(carrier)
+  end
+
+  # A header the producer wrote that this consumer cannot read is reported, so
+  # broken propagation is distinguishable from the ordinary start of a new
+  # pathway; a message that carries no header at all starts one in silence.
+  @spec continued({:ok, Pathway.t()} | :absent | {:error, :malformed}) :: Pathway.t()
+  defp continued({:ok, pathway}), do: pathway
+  defp continued(:absent), do: Pathway.new(%{})
+
+  defp continued({:error, :malformed}) do
+    :telemetry.execute(@skip_event, %{count: 1}, %{reason: :malformed_header, extractors: nil})
+
+    Pathway.new(%{})
   end
 
   # Attributes reach this library from a broker, so a value that is not a

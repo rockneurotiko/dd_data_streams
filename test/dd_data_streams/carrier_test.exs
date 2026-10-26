@@ -38,6 +38,19 @@ defmodule DdDataStreams.CarrierTest do
     assert Flat.put(%{}, @pathway) |> Flat.get(@key) == @pathway
   end
 
+  test "fetch/2 tells a malformed header apart from an absent one in both adapters" do
+    assert Carrier.fetch(%{@key => Propagator.encode_str(@pathway)}, @key) == {:ok, @pathway}
+    assert Carrier.fetch(%{@key => "AAAA"}, @key) == {:error, :malformed}
+    assert Carrier.fetch(%{}, @key) == :absent
+
+    sqs = %{"_datadog" => Jason.encode!(%{@key => Propagator.encode_str(@pathway)})}
+    assert Carrier.fetch(sqs, @key) == {:ok, @pathway}
+    assert Carrier.fetch(%{"_datadog" => "{}"}, @key) == :absent
+
+    assert Carrier.fetch(%{"_datadog" => Jason.encode!(%{@key => 42})}, @key) ==
+             {:error, :malformed}
+  end
+
   test "sqs get/put/size round-trip with string_value" do
     carrier = %{
       "_datadog" => %{

@@ -104,9 +104,33 @@ defmodule DdDataStreams.AggregatorTest do
       nil
     )
 
+    stop_handler = "flush-stop-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      stop_handler,
+      [:dd_data_streams, :flush, :stop],
+      fn _event, measurements, metadata, _config ->
+        send(test, {:flush_stop, measurements, metadata})
+      end,
+      nil
+    )
+
+    skip_handler = "checkpoint-skip-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      skip_handler,
+      [:dd_data_streams, :checkpoint, :skip],
+      fn _event, measurements, metadata, _config ->
+        send(test, {:checkpoint_skip, measurements, metadata})
+      end,
+      nil
+    )
+
     on_exit(fn ->
       :telemetry.detach(handler)
       :telemetry.detach(invalid_handler)
+      :telemetry.detach(stop_handler)
+      :telemetry.detach(skip_handler)
     end)
 
     :ok
@@ -238,6 +262,29 @@ defmodule DdDataStreams.AggregatorTest do
 
     assert posts() == []
     assert %{buckets: %{}} = :sys.get_state(pid)
+
+    assert_receive {:flush_stop, %{buckets: 0, points: 0, dropped: 2},
+                    %{service: nil, reason: :future_bucket}}
+  end
+
+  test "a successful flush reports the buckets and points it sent" do
+    start_aggregator()
+    Aggregator.add(@checkpoint)
+
+    assert :ok = Aggregator.flush()
+    assert [[_url, _headers, _body]] = posts()
+
+    assert_receive {:flush_stop, %{buckets: 2, points: 2, dropped: 0},
+                    %{service: "checkout", reason: nil}}
+  end
+
+  test "adding a checkpoint while no aggregator runs reports the skip" do
+    assert is_nil(Process.whereis(Aggregator))
+
+    assert :ok = Aggregator.add(@checkpoint)
+
+    assert_receive {:checkpoint_skip, %{count: 1},
+                    %{reason: :aggregator_not_running, extractors: nil}}
   end
 
   test "a checkpoint within clock skew is kept and flushed on shutdown" do

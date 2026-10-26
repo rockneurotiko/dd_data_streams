@@ -19,7 +19,9 @@ defmodule DdDataStreams.Propagator do
   header written here decodes there.
 
   A malformed or missing header is not an error condition for a pipeline:
-  `get/1` returns `nil` and the consumer starts a new pathway.
+  `get/1` returns `nil` and the consumer starts a new pathway. `fetch/1` tells
+  the two apart, so a consumer that wants to report a header it could not read
+  can.
   """
 
   alias DdDataStreams.Config
@@ -103,15 +105,45 @@ defmodule DdDataStreams.Propagator do
   @spec get(map() | [tuple()] | nil, String.t()) :: Pathway.t() | nil
   def get(attributes), do: get(attributes, Config.header())
 
-  def get(attributes, key) when is_map(attributes) do
-    if Map.has_key?(attributes, key) do
-      attributes |> Map.get(key) |> decode_value()
-    else
-      attributes |> Map.get(@legacy_header) |> decode_raw_value()
+  def get(attributes, key) do
+    case fetch(attributes, key) do
+      {:ok, pathway} -> pathway
+      _absent_or_malformed -> nil
     end
   end
 
-  def get(attributes, key) when is_list(attributes) do
+  @doc """
+  Reads the pathway out of a message's headers under `key`, like `get/2`, but
+  tells a header that is absent from one that is present and cannot be read.
+
+  Answers `{:ok, pathway}`, `:absent` when neither the configured key nor the
+  legacy `#{@legacy_header}` one is present, or `{:error, :malformed}` when a
+  header is present but is not a usable base64 pathway: not decodable,
+  missing the hash and two timestamps, or carrying a start outside the window
+  `decode/1` believes. A consumer starts a new pathway either way, but a
+  producer writing a header this consumer cannot read would otherwise be
+  indistinguishable from one that sent no header at all. A header under any
+  other key is indistinguishable from an absent one.
+  """
+  @spec fetch(map() | [tuple()] | nil) :: {:ok, Pathway.t()} | :absent | {:error, :malformed}
+  @spec fetch(map() | [tuple()] | nil, String.t()) ::
+          {:ok, Pathway.t()} | :absent | {:error, :malformed}
+  def fetch(attributes), do: fetch(attributes, Config.header())
+
+  def fetch(attributes, key) when is_map(attributes) do
+    case Map.fetch(attributes, key) do
+      {:ok, value} ->
+        decode_value(value)
+
+      :error ->
+        case Map.fetch(attributes, @legacy_header) do
+          {:ok, value} -> decode_raw_value(value)
+          :error -> :absent
+        end
+    end
+  end
+
+  def fetch(attributes, key) when is_list(attributes) do
     case find(attributes, key) do
       {:ok, value} ->
         decode_value(value)
@@ -119,12 +151,12 @@ defmodule DdDataStreams.Propagator do
       :error ->
         case find(attributes, @legacy_header) do
           {:ok, value} -> decode_raw_value(value)
-          :error -> nil
+          :error -> :absent
         end
     end
   end
 
-  def get(_attributes, _key), do: nil
+  def fetch(_attributes, _key), do: :absent
 
   defp find([entry | _rest], key) when entry(entry, key),
     do: {:ok, elem(entry, tuple_size(entry) - 1)}
@@ -134,21 +166,21 @@ defmodule DdDataStreams.Propagator do
 
   defp decode_value(value) when is_binary(value) do
     case decode_str(value) do
-      {:ok, pathway} -> pathway
-      :error -> nil
+      {:ok, pathway} -> {:ok, pathway}
+      :error -> {:error, :malformed}
     end
   end
 
-  defp decode_value(_value), do: nil
+  defp decode_value(_value), do: {:error, :malformed}
 
   defp decode_raw_value(value) when is_binary(value) do
     case decode(value) do
-      {:ok, pathway} -> pathway
-      :error -> nil
+      {:ok, pathway} -> {:ok, pathway}
+      :error -> {:error, :malformed}
     end
   end
 
-  defp decode_raw_value(_value), do: nil
+  defp decode_raw_value(_value), do: {:error, :malformed}
 
   @doc """
   The legacy binary header key, `"#{@legacy_header}"`.

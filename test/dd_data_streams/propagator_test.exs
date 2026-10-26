@@ -281,6 +281,21 @@ defmodule DdDataStreams.PropagatorTest do
     assert Propagator.get(nil) == nil
   end
 
+  test "fetch/1 and fetch/2 tell a malformed header apart from an absent one" do
+    assert Propagator.fetch(%{@key => "AAAA"}) == {:error, :malformed}
+    assert Propagator.fetch(%{@key => nil}) == {:error, :malformed}
+    assert Propagator.fetch(%{@key => "AAAA", "dd-pathway-ctx" => <<>>}) == {:error, :malformed}
+    assert Propagator.fetch(%{"dd-pathway-ctx" => "AAAA"}) == {:error, :malformed}
+    assert Propagator.fetch([{@key, "AAAA"}]) == {:error, :malformed}
+
+    assert Propagator.fetch(%{}) == :absent
+    assert Propagator.fetch(%{"other" => "AAAA"}, @key) == :absent
+    assert Propagator.fetch(nil) == :absent
+
+    pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
+    assert Propagator.fetch(Propagator.put(%{}, pathway)) == {:ok, pathway}
+  end
+
   test "a legacy binary dd-pathway-ctx header decodes" do
     pathway = %Pathway{hash: 234, pathway_start: 1_700_000_000_000, edge_start: 1_700_003_600_000}
     raw = Propagator.encode(pathway)

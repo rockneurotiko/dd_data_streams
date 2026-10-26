@@ -771,7 +771,10 @@ twice, in the bucket it belongs to and in the bucket that contains the start of
 its pathway, as the official tracers do; the two entries differ only in bucket
 start and timestamp type. A bucket is dropped before it is sent, so a failed
 send loses that bucket rather than growing memory; the failure is reported via
-telemetry, and nothing is raised. Stopping the aggregator sends
+telemetry, and nothing is raised. A bucket whose start sits more than a minute
+ahead of the clock (a replayed message, a skewed broker clock) never becomes
+due and is dropped at the next flush instead of being held forever; that drop
+is reported on telemetry too. Stopping the aggregator sends
 the partial bucket too, unless the agent has not answered within ten seconds,
 in which case the node keeps shutting down without it.
 
@@ -785,7 +788,7 @@ host does not add it to its own supervision tree.
 
 ## Telemetry
 
-The library emits three events:
+The library emits five events:
 
 * `[:dd_data_streams, :transport, :captured]`, once per flush through
   `DdDataStreams.Transport.Capture`, with `%{count: 1}` measurements and
@@ -793,8 +796,33 @@ The library emits three events:
   configured the capture transport (see
   [Testing your pipeline](#testing-your-pipeline)) ever sees it.
 
+* `[:dd_data_streams, :flush, :stop]`, once per flush that ends without an
+  error, with `%{buckets: buckets, points: points, dropped: dropped}`
+  measurements and `%{service: service, reason: reason}` metadata. On a
+  successful send, `buckets` and `points` are what was sent, `dropped` is `0`
+  and `reason` is `nil`. When a bucket is dropped because its start sits beyond
+  the clock-skew horizon and it would never become due, `buckets` and `points`
+  are `0`, `dropped` counts the points that were discarded and `reason` is
+  `:future_bucket`.
+
 * `[:dd_data_streams, :flush, :error]`, once per failed Agent flush, with
   `%{count: 1}` measurements and `%{service: service, reason: reason}` metadata.
+
+* `[:dd_data_streams, :checkpoint, :skip]`, once per checkpoint the library
+  decides not to record, with `%{count: 1}` measurements and
+  `%{reason: reason, extractors: extractors}` metadata. The reasons are:
+
+  * `:no_extractor_match` - no configured extractor recognised the message's
+    metadata, so nothing was recorded for it; `extractors` is the configured
+    list that was asked.
+  * `:malformed_header` - the message carried the pathway header but it could
+    not be decoded, so the consumer started a new pathway; a message with no
+    header at all is the ordinary start of a new pathway and is not reported.
+    `extractors` is `nil`.
+  * `:aggregator_not_running` - a checkpoint was handed to
+    `DdDataStreams.Aggregator.add/1` while no aggregator was running (the
+    library disabled at boot, or between a crash and its restart);
+    `extractors` is `nil`.
 
 * `[:dd_data_streams, :handler, :error]`, once per failure: one per failing
   extractor, one per edge the library cannot use, and one per message or batch

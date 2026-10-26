@@ -13,6 +13,10 @@ defmodule DdDataStreams.Carrier do
   alias DdDataStreams.Pathway
 
   @callback get(carrier :: term(), key :: String.t()) :: Pathway.t() | nil
+
+  @callback fetch(carrier :: term(), key :: String.t()) ::
+              {:ok, Pathway.t()} | :absent | {:error, :malformed}
+
   @callback put(carrier :: term(), pathway :: Pathway.t(), key :: String.t()) :: term()
   @callback size(carrier :: term()) :: non_neg_integer()
 
@@ -71,6 +75,16 @@ defmodule DdDataStreams.Carrier do
   @spec get(module(), term(), String.t()) :: Pathway.t() | nil
   def get(adapter, carrier, key) when is_atom(adapter) and is_binary(key) do
     adapter.get(carrier, key)
+  end
+
+  @doc """
+  Reads the pathway out of `carrier` under `key`, like `get/2`, but tells a
+  header that is absent from one that is present and cannot be read.
+  """
+  @spec fetch(term(), String.t()) :: {:ok, Pathway.t()} | :absent | {:error, :malformed}
+  def fetch(carrier, key) when is_binary(key) do
+    {adapter, c} = unwrap(carrier)
+    adapter.fetch(c, key)
   end
 
   @doc false

@@ -15,14 +15,33 @@ defmodule DdDataStreams.Carrier.Sqs do
 
   @impl true
   def get(carrier, key) do
-    with json when is_map(json) <- datadog_json(carrier),
-         value when is_binary(value) <- Map.get(json, key) do
-      case Propagator.decode_str(value) do
-        {:ok, pathway} -> pathway
-        :error -> nil
-      end
-    else
-      _ -> nil
+    case fetch(carrier, key) do
+      {:ok, pathway} -> pathway
+      _absent_or_malformed -> nil
+    end
+  end
+
+  @impl true
+  def fetch(carrier, key) do
+    case datadog_json(carrier) do
+      json when is_map(json) -> fetch_value(json, key)
+      _ -> :absent
+    end
+  end
+
+  defp fetch_value(json, key) do
+    case Map.fetch(json, key) do
+      {:ok, value} when is_binary(value) ->
+        case Propagator.decode_str(value) do
+          {:ok, pathway} -> {:ok, pathway}
+          :error -> {:error, :malformed}
+        end
+
+      {:ok, _other} ->
+        {:error, :malformed}
+
+      :error ->
+        :absent
     end
   end
 
