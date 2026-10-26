@@ -29,7 +29,7 @@ an application can list several to run pipelines on more than one bus at once.
 * `DdDataStreams`: the entry point. `attach/0` installs the Broadway telemetry
   handlers, `produce/3` records a produce checkpoint and returns the `{key,
   value}` pair to add to the outgoing message, `produce_batch/3` does the same
-  for a batch, and `consume/1` and `checkpoint/2` cover a pipeline that does not
+  for a batch, and `consume/1` and `checkpoint/1` cover a pipeline that does not
   run on Broadway (`produce/3` takes `extractor:` when the stage publishes to a
   different bus than it consumed from).
 * `DdDataStreams.Extractor`: the behaviour that names the edge of a message from
@@ -552,18 +552,20 @@ handler already records that checkpoint, and the message would be counted twice.
 
 ### Checkpoints for other stages
 
-`checkpoint/2` records a checkpoint for a stage that is not a bus edge, such as
+`checkpoint/1` records a checkpoint for a stage that is not a bus edge, such as
 an internal queue, and takes its edge tags verbatim:
 
 ```elixir
-pathway =
+DdDataStreams.Context.put(
   DdDataStreams.checkpoint(
     ["direction:in", "type:internal-queue", "manual_checkpoint:true"]
   )
+)
 ```
 
-It does not change the process context; a produce in that stage should continue
-the pathway you passed in.
+The call leaves the process context alone; the example puts the pathway it
+returned back, so a produce in that stage continues the pathway the checkpoint
+returned and the new node gets its downstream edge instead of a dead end.
 
 `manual_checkpoint:true` is an aggregation tag, so it splits the statistics of
 a node: two checkpoints of the same node, meaning the same hash-tier tags and
