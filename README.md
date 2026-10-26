@@ -784,8 +784,11 @@ header's key and value, in bytes. It includes the inbound pathway header (about
 The produce size is the size of `data` by default, or the `:payload_size` you
 pass to `produce/3`; `produce_batch/3` measures each payload separately. The
 library adds the size of the `{key, value}` pair it returns - the configured
-header key plus the encoded value - so both sides of one edge measure the same
-message. Measure the message without that pair.
+header key plus the encoded value. That is all produce can see: structurally
+it cannot see the attributes the publisher put on the message, while consume
+counts every attribute and the ordering key on the arriving one. The two sides
+therefore agree only for a bare message; pass `payload_size:` to count the
+rest. Measure the message without that pair.
 
 ### Flushing
 

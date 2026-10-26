@@ -693,7 +693,7 @@ defmodule DdDataStreams do
 
   # The pathway pair goes out with the message and the consume side measures
   # every attribute it arrives with, so the produce side counts the pair it is
-  # about to send and both sides of one edge measure the same message.
+  # about to send; attributes the publisher added stay unseen on this side.
   defp header_size({key, value}), do: byte_size(key) + byte_size(value)
 
   # Checkpoint tags are reported verbatim, so a non-binary can never be split
