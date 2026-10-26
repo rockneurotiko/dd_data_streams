@@ -77,6 +77,9 @@ defmodule DdDataStreams.PathwayTest do
       Pathway.new(hash: 3)
     ]
 
+    # The draw is random and the assertion only checks membership; seeding
+    # keeps it reproducible run to run.
+    :rand.seed(:exsss, {5, 10, 15})
     assert Pathway.merge(pathways) in pathways
     assert Pathway.merge([]) == %Pathway{}
   end

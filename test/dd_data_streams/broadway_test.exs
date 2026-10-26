@@ -30,6 +30,21 @@ defmodule DdDataStreams.BroadwayTest do
   @consume_tags ["direction:in", "subscription:orders-sub", "type:google-pubsub"]
   @produce_tags ["direction:out", "topic:orders", "type:google-pubsub"]
 
+  # Hard-pinned pathway hashes, so a change inside the hash functions cannot
+  # make these assertions pass by agreeing with themselves. The parent-zero
+  # values are the vectors pathway_test.exs pins and its comment credits to
+  # dd-trace-py's fnv1_64; the header-chained ones were derived outside this
+  # library by the same FNV-1 recipe (offset basis 0xcbf29ce484222325, prime
+  # 0x100000001b3, over the little-endian child hash followed by the parent
+  # hash), chained onto the dd-trace-py header the fixtures carry.
+  @consume_pathway_hash 11_571_056_430_286_957_182
+  @produce_pathway_hash 17_914_629_665_428_218_669
+  # Chained onto hash 2_367_537_495_353_648_021, the dd-trace-py header the
+  # fixtures carry.
+  @header_chained_consume_hash 7_600_900_903_418_953_681
+  @header_chained_produce_hash 7_510_542_000_147_840_257
+  @manual_checkpoint_hash 2_935_049_296_382_441_740
+
   @absent :absent
 
   setup do
@@ -80,7 +95,8 @@ defmodule DdDataStreams.BroadwayTest do
 
     assert checkpoint.tags == @consume_tags
     assert checkpoint.parent_hash == header.hash
-    assert checkpoint.hash == consume_hash(header.hash)
+    # Chained onto the hash dd-trace-py itself put on the message.
+    assert checkpoint.hash == @header_chained_consume_hash
     assert checkpoint.timestamp == received_ms
     assert checkpoint.edge_latency == 42
     assert checkpoint.pathway_latency == received_ms - header.pathway_start
@@ -113,7 +129,7 @@ defmodule DdDataStreams.BroadwayTest do
 
     assert checkpoint.tags == @consume_tags
     assert checkpoint.parent_hash == 0
-    assert checkpoint.hash == consume_hash(0)
+    assert checkpoint.hash == @consume_pathway_hash
     # data 5 bytes + ordering key 10 bytes, no attributes and no inbound header.
     assert checkpoint.payload_size == 15
   end
@@ -135,12 +151,12 @@ defmodule DdDataStreams.BroadwayTest do
     assert key == "dd-pathway-ctx-base64"
     assert produced.tags == @produce_tags
     assert produced.parent_hash == consumed.hash
-    assert produced.hash == produce_hash(consumed.hash)
+    assert produced.hash == @header_chained_produce_hash
     # data 5 bytes + the injected header key and value.
     assert produced.payload_size == 5 + byte_size(key) + byte_size(value)
 
     # Decoding the returned value reads this library's own encoding; the hash it
-    # has to carry is the one derived above from Pathway.node_hash/4.
+    # has to carry is the one pinned above, chained from the consume checkpoint.
     assert {:ok, %Pathway{hash: hash, pathway_start: pathway_start}} =
              Propagator.decode_str(value)
 
@@ -209,9 +225,12 @@ defmodule DdDataStreams.BroadwayTest do
         {header.hash, checkpoint.hash}
       end)
 
+    # Fan-in samples one of the three pathways; seeding keeps the draw
+    # reproducible run to run.
+    :rand.seed(:exsss, {17, 42, 99})
     batch_event(messages)
 
-    # Fan-in is sampled, so which of the three it keeps is not fixed; that it is
+    # Which of the three the draw keeps is not asserted; that it is
     # one of them, at the node this service consumed it at, is.
     merged = Context.get()
     assert merged.hash in Map.values(consumed)
@@ -647,7 +666,7 @@ defmodule DdDataStreams.BroadwayTest do
 
     assert_receive {:checkpoint, produced}
     assert produced.parent_hash == 0
-    assert produced.hash == produce_hash(0)
+    assert produced.hash == @produce_pathway_hash
 
     assert key == "dd-pathway-ctx-base64"
     assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
@@ -692,8 +711,7 @@ defmodule DdDataStreams.BroadwayTest do
     assert checkpoint.parent_hash == 234
     # partition and manual_checkpoint are reported; only the identifying tags are
     # hashed, which is what keeps a node one node across its partitions.
-    assert checkpoint.hash ==
-             Pathway.pathway_hash(Pathway.node_hash(@service, @env, "", tags), 234)
+    assert checkpoint.hash == @manual_checkpoint_hash
 
     assert pathway.hash == checkpoint.hash
     assert pathway.edge_start == checkpoint.timestamp
@@ -817,11 +835,6 @@ defmodule DdDataStreams.BroadwayTest do
   end
 
   defp native(milliseconds), do: System.convert_time_unit(milliseconds, :millisecond, :native)
-
-  defp node_hash(tags), do: Pathway.node_hash(@service, @env, "", tags)
-
-  defp consume_hash(parent), do: Pathway.pathway_hash(node_hash(@consume_tags), parent)
-  defp produce_hash(parent), do: Pathway.pathway_hash(node_hash(@produce_tags), parent)
 end
 
 defmodule DdDataStreams.BroadwayTest.ProducerAwareExtractor do
