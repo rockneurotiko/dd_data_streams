@@ -6,14 +6,13 @@
 # that the library sent a request to the configured URL and handled the status;
 # it does not prove that a real agent accepts the payload.
 #
-#   elixir stub_agent.exs              # listens on 8126
-#   PORT=8126 elixir stub_agent.exs
+#   elixir e2e/stub_agent.exs         # from the repository root; listens on 8126
+#   PORT=8126 elixir e2e/stub_agent.exs
 #
 # The library's agent acceptance test posts to whatever DD_TRACE_AGENT_URL
-# names, so point it here from a second shell:
+# names, so point it here from a second shell, also at the repository root:
 #
-#   DD_TRACE_AGENT_URL=http://127.0.0.1:8126 MIX_BUILD_PATH=_build/e2e \
-#     mix test test/integration/agent_test.exs
+#   DD_TRACE_AGENT_URL=http://127.0.0.1:8126 mix test --only agent
 
 defmodule StubAgent do
   def accept(listen) do

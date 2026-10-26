@@ -935,11 +935,22 @@ API, with the message handed to the library in the shape
 subscriptions, attributes surviving a publish, the receive time.
 
 ```sh
-docker run --rm -d -p 127.0.0.1:8085:8085 \
+docker run --rm -d --name dsm-e2e-emulator \
+  -p 127.0.0.1:8085:8085 \
   gcr.io/google.com/cloudsdktool/cloud-sdk:582.0.0-emulators \
   gcloud beta emulators pubsub start --project=dsm-test --host-port=0.0.0.0:8085
 
-PUBSUB_EMULATOR_HOST=127.0.0.1:8085 mix test --only emulator
+DSM_PAYLOAD_DECODER=e2e/decoder/decode \
+  PUBSUB_EMULATOR_HOST=127.0.0.1:8085 \
+  mix test --only emulator
+```
+
+`DSM_PAYLOAD_DECODER` is optional: it hands the flushed body to the reference
+decoder under `e2e/decoder/decode` (set up as `e2e/README.md` describes) and the
+tier skips that check when it is unset. Stop the emulator when you are done:
+
+```sh
+docker stop dsm-e2e-emulator
 ```
 
 ### `agent`
@@ -949,6 +960,14 @@ Agent proxies that route to the pipeline stats intake, so the status code is the
 intake's own answer: `202` means the backend accepted for processing, `500` means
 the Agent has no API key to forward with, and a `4xx` means the intake rejected
 the payload. This is the tier that validates the wire format.
+
+From the repository root, start the stub:
+
+```sh
+elixir e2e/stub_agent.exs
+```
+
+In a second shell, also from the repository root:
 
 ```sh
 DD_TRACE_AGENT_URL=http://127.0.0.1:8126 mix test --only agent

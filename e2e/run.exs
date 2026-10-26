@@ -282,8 +282,10 @@ System.put_env(%{
   "DD_TRACE_AGENT_URL" => "http://127.0.0.1:8126"
 })
 
-# Set before the application starts: the aggregator reads its transport once, at
-# start. This is why this script runs with `mix run --no-start`.
+# Set before the application starts, which is why this script runs with `mix
+# run --no-start`: whether the aggregator runs is decided once at start from
+# `enabled?`, so the configuration has to be in place before the application
+# boots. The transport itself is re-read from configuration on every flush.
 Application.put_env(:dd_data_streams, :transport, E2e.Capture)
 
 {:ok, _} = Application.ensure_all_started(:req)

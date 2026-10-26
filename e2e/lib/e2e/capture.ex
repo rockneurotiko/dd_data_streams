@@ -2,8 +2,9 @@ defmodule E2e.Capture do
   @moduledoc """
   A transport that writes the flushed body to disk instead of posting it.
 
-  The aggregator reads the transport once, when it starts, so the script sets
-  this one before it starts the application. The files it writes are what the
+  The script installs this as the transport before it starts the application,
+  so the first flush already writes to disk; the aggregator re-reads the
+  transport from configuration on every flush. The files it writes are what the
   decoder reads, and they are the exact bytes the agent would have received.
   """
 

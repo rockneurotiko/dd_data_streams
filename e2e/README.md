@@ -62,9 +62,14 @@ mix deps.get
 mix run --no-start run.exs
 ```
 
-`--no-start` matters. The script sets `Application.put_env(:dd_data_streams,
-:transport, E2e.Capture)` before it starts the application, because the
-aggregator reads its transport once, when it starts.
+`--no-start` matters for startup ordering, not for the transport. The
+aggregator re-reads `:dd_data_streams, :transport` from configuration on every
+flush, so it would pick the capture transport up whenever it is set. What must
+be settled before the application boots is whether the aggregator runs at all:
+`DdDataStreams.Config.enabled?/0` is read once at start and the aggregator keeps
+that answer. The script therefore puts the environment and the capture
+transport in place first, and starts the application only once that state is
+reached.
 
 Every invocation creates its own topics and subscriptions (`in-topic-<run id>`,
 `out-topic-<run id>`, `e2e-sub-<run id>`, `e2e-out-sub-<run id>`), so a second
@@ -160,26 +165,25 @@ the parent/child relationship and the sample counts are stable; the hashes and
 bucket starts change with the run's timestamps.
 
 The same decoder can be handed to the library's emulator tier, which is the
-`emulator` ExUnit tag:
+`emulator` ExUnit tag. From the repository root:
 
 ```sh
-cd /home/rock/Git/dd_data_streams
-DSM_PAYLOAD_DECODER=$PWD/e2e/decoder/decode \
+DSM_PAYLOAD_DECODER=e2e/decoder/decode \
   PUBSUB_EMULATOR_HOST=127.0.0.1:8085 \
   mix test --only emulator
 ```
 
 ## Exercise the agent tier without an agent
 
+From the repository root, start the stub:
+
 ```sh
-cd e2e
-elixir stub_agent.exs
+elixir e2e/stub_agent.exs
 ```
 
-In another shell:
+In a second shell, also from the repository root:
 
 ```sh
-cd /home/rock/Git/dd_data_streams
 DD_TRACE_AGENT_URL=http://127.0.0.1:8126 mix test --only agent
 ```
 
