@@ -39,8 +39,7 @@ defmodule DdDataStreams.ConsumeClearsContextTest do
     match = %{data: "hello", metadata: %{match: true}}
     no_match = %{data: "bye", metadata: %{match: false}}
 
-    assert {pathway, _checkpoint} = DdDataStreams.consume(match)
-    assert %Pathway{} = pathway
+    assert %Pathway{} = pathway = DdDataStreams.consume(match)
     assert pathway.hash != 0
 
     # Drain the consume checkpoint.

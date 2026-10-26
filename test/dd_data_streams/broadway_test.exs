@@ -621,9 +621,9 @@ defmodule DdDataStreams.BroadwayTest do
   test "a checkpoint records a stage that is neither a consume nor a produce" do
     tags = ["direction:in", "type:internal-queue", "manual_checkpoint:true", "partition:3"]
 
-    {pathway, checkpoint} = DdDataStreams.checkpoint(Pathway.new(hash: 234), tags)
+    pathway = DdDataStreams.checkpoint(Pathway.new(hash: 234), tags)
 
-    assert_receive {:checkpoint, ^checkpoint}
+    assert_receive {:checkpoint, checkpoint}
 
     assert checkpoint.tags == tags
     assert checkpoint.parent_hash == 234

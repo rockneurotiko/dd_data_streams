@@ -32,7 +32,9 @@ defmodule DdDataStreams.PubSubEmulatorTest do
   use Mimic
 
   alias DdDataStreams.Aggregator
+  alias DdDataStreams.Checkpoints
   alias DdDataStreams.Context
+  alias DdDataStreams.Extractor.GooglePubSub
   alias DdDataStreams.Pathway
   alias DdDataStreams.Propagator
   alias DdDataStreams.Transport
@@ -166,7 +168,19 @@ defmodule DdDataStreams.PubSubEmulatorTest do
 
     data = Base.decode64!(message["data"])
 
-    {pathway, checkpoint} = DdDataStreams.consume(%{data: data, metadata: metadata})
+    pathway = DdDataStreams.consume(%{data: data, metadata: metadata})
+
+    # The consume checkpoint is recorded by `consume/1` and no longer
+    # returned, so recompute it here for the assertions below.
+    {:ok, consume_tags, consume_parts} =
+      GooglePubSub.consume(metadata)
+
+    {_recomputed_pathway, checkpoint} =
+      Checkpoints.consume(
+        Map.put(consume_parts, :data, data),
+        Enum.filter(consume_tags, &is_binary/1),
+        received_ms
+      )
 
     assert checkpoint.tags == [
              "direction:in",

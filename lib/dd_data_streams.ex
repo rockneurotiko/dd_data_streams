@@ -156,12 +156,12 @@ defmodule DdDataStreams do
   `produce/3` cannot chain onto the previous message's pathway. An extractor
   that raises is treated the same way, and
   the reason is logged and reported as a `[:dd_data_streams, :handler, :error]`
-  telemetry event. Otherwise returns the pathway the checkpoint reached and the
-  checkpoint itself, with its payload size, for an application that wants to
-  record or forward them itself. The checkpoint has already been given to the
-  aggregator, so adding it again counts the message twice.
+  telemetry event. Otherwise returns the pathway the checkpoint reached. The
+  checkpoint has already been given to the aggregator, so it is not returned;
+  use `DdDataStreams.Checkpoints.consume/3` if you need the checkpoint to
+  record or forward it yourself, and do not add it to this aggregator again.
   """
-  @spec consume(map()) :: {Pathway.t(), Pathway.checkpoint()} | nil
+  @spec consume(map()) :: Pathway.t() | nil
   def consume(%{data: _, metadata: _} = message) do
     case checkpointed(message) do
       nil ->
@@ -172,7 +172,7 @@ defmodule DdDataStreams do
         Aggregator.add(checkpoint)
         Context.put(pathway, extractor)
 
-        {pathway, checkpoint}
+        pathway
     end
   end
 
@@ -304,7 +304,9 @@ defmodule DdDataStreams do
 
   @doc """
   Records a checkpoint for the stage reached by `tags` and returns the
-  checkpointed pathway together with the measurement.
+  checkpointed pathway. The checkpoint has already been given to the
+  aggregator, so it is not returned; use `Pathway.set_checkpoint/3` if you
+  need the measurement itself.
 
   `pathway` is the pathway to continue - `DdDataStreams.Context.get/0` for the
   one the current stage consumed - and `tags` are the edge tags reported for
@@ -318,7 +320,7 @@ defmodule DdDataStreams do
   given to the aggregator. The caller's context is left alone: this is a
   checkpoint in the middle of a pathway, not a new stage to produce from.
   """
-  @spec checkpoint(Pathway.t(), [String.t()]) :: {Pathway.t(), Pathway.checkpoint()}
+  @spec checkpoint(Pathway.t(), [String.t()]) :: Pathway.t()
   def checkpoint(%Pathway{} = pathway, tags) when is_list(tags) do
     {pathway, checkpoint} =
       Pathway.set_checkpoint(pathway, tags,
@@ -329,7 +331,7 @@ defmodule DdDataStreams do
 
     Aggregator.add(checkpoint)
 
-    {pathway, checkpoint}
+    pathway
   end
 
   @doc false

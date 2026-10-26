@@ -195,7 +195,7 @@ the batch; use `produce_batch/3` when one send answers the whole batch.
 A pipeline that does not use Broadway can call `consume/1` itself:
 
 ```elixir
-{pathway, _checkpoint} =
+pathway =
   DdDataStreams.consume(%{
     data: data,
     metadata: %{
@@ -409,7 +409,7 @@ or a map shaped like one - the body in `:data`, the producer's metadata in
 `:metadata` - so the extractor names the edge exactly as it does for Broadway:
 
 ```elixir
-{pathway, _checkpoint} =
+pathway =
   DdDataStreams.consume(%{
     data: message.data,
     metadata: %{
@@ -452,7 +452,7 @@ handler already records that checkpoint, and the message would be counted twice.
 an internal queue, and takes its edge tags verbatim:
 
 ```elixir
-{pathway, _checkpoint} =
+pathway =
   DdDataStreams.checkpoint(
     DdDataStreams.Context.get() || DdDataStreams.Pathway.new(%{}),
     ["direction:in", "type:internal-queue", "manual_checkpoint:true"]
