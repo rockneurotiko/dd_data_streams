@@ -28,8 +28,8 @@ defmodule DdDataStreams.Propagator do
 
   @legacy_header "dd-pathway-ctx"
 
-  # A 64-bit unsigned integer takes at most nine varint bytes: eight groups of
-  # seven bits plus a final byte carrying the remaining eight.
+  # Group index of the last varint byte: a 64-bit unsigned integer takes at
+  # most nine varint bytes, so the ninth (index 8) is taken whole.
   @max_varint_bytes 8
 
   # A start is a Unix time in milliseconds the reported latency is measured

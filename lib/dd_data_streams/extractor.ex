@@ -89,8 +89,10 @@ defmodule DdDataStreams.Extractor do
       a list of `{key, value}` pairs, carrying `dd-pathway-ctx-base64`
     * `:ordering_key` - the ordering key, counted towards the payload size
     * `:received_at` - when the message reached the pipeline, in native time
-      units; without it the consume checkpoint is stamped now and reports no
-      consume latency
+      units; `nil` (or absent) means the consume checkpoint is stamped now and
+      reports no consume latency. `DdDataStreams.consume/1` turns `nil` into the
+      current time before calling `DdDataStreams.Checkpoints.consume/3`, which
+      requires an integer
   """
   @type parts :: %{
           optional(:attributes) => map() | [{String.t(), String.t()}] | nil,

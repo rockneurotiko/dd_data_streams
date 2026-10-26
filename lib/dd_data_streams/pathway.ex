@@ -9,7 +9,8 @@ defmodule DdDataStreams.Pathway do
   to the next service. `pathway_start` and `edge_start` are the Unix times in
   milliseconds at which the pathway and the current edge started; the
   difference between them and the time of a checkpoint is the latency reported
-  for the edge.
+  for the edge. A `pathway_start` of `0` is the sentinel for an unstarted
+  pathway: its first checkpoint starts it at the checkpoint time.
 
   Only tags that identify a node take part in the hash. Tags that vary per
   message, such as `partition`, are reported but never hashed, because hashing
@@ -106,7 +107,7 @@ defmodule DdDataStreams.Pathway do
 
   @doc """
   Samples one pathway from a fan-in, so a batch that consumed several pathways
-  continues exactly one of them. An empty list yields a fresh pathway.
+  continues exactly one of them. An empty list yields an unstarted pathway.
   """
   @spec merge([t()]) :: t()
   def merge([]), do: %__MODULE__{}

@@ -7,8 +7,10 @@ defmodule DdDataStreams.Checkpoints do
   unusable, and measures the consume edge. `produce/3` measures the produce
   edge and returns the checkpointed pathway together with its checkpoint; it
   does not encode, send or mutate anything. Neither function sends anything:
-  each returns its checkpoint for `DdDataStreams.Aggregator.add/1`, which keeps
-  the module pure and callable from anywhere in a pipeline.
+  each returns its checkpoint for `DdDataStreams.Aggregator.add/1`. `consume/3`
+  reads `DdDataStreams.Config` for the service, environment, primary tag and
+  header key, so the module is not strictly pure, but it performs no I/O and
+  sends nothing, and stays callable from anywhere in a pipeline.
 
   The edge tags are the caller's: this module records exactly the tags it is
   given, in the order it is given them. `DdDataStreams` builds them, from the
@@ -34,10 +36,10 @@ defmodule DdDataStreams.Checkpoints do
   `message.metadata.attributes` and `message.metadata.orderingKey`, and the
   shape `BroadwayKafka` messages take once their `message.metadata.headers` list
   is passed as `:headers`. Extra keys are left alone. A message that carries
-  headers is read through them, and a header this library cannot read is
-  measured as empty. Otherwise an attributes value that is neither a map nor a
-  list is read as an empty attributes map, and a list of attributes is read as
-  header pairs.
+  headers is read through them, and headers take precedence over attributes; a
+  header this library cannot read is measured as empty. Otherwise an attributes
+  value that is neither a map nor a list is read as an empty attributes map, and
+  a list of attributes is read as header pairs.
 
   `produce/3` takes no message: the caller measures the outgoing payload, or
   lets `DdDataStreams.produce/3` measure its `data`.
@@ -88,7 +90,7 @@ defmodule DdDataStreams.Checkpoints do
 
   @doc """
   Sets the consume checkpoint for a message received on the edge described by
-  `tags`, stamped at `received_at`.
+  `tags`, stamped at `received_at` (in native time units).
 
   `tags` are the edge tags in full, direction included, such as
   `["direction:in", "subscription:orders-sub", "type:google-pubsub"]`;
