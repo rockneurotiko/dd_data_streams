@@ -17,10 +17,10 @@ defmodule DdDataStreams.PropagatorInteropTest do
   # change here fails these assertions, the wire format moved and that is the
   # finding.
   #
-  # The one recorded disagreement, the widest varint that dd-trace-go truncates
-  # and dd-trace-java clamps, is asserted below against the recorded fields: it
-  # is a real difference between the tracers worth pinning, not a property of
-  # this library.
+  # The one recorded disagreement, the widest varint that dd-trace-go destroys
+  # in its millisecond-to-nanosecond conversion and dd-trace-java clamps, is
+  # asserted below against the recorded fields: it is a real difference between
+  # the tracers worth pinning, not a property of this library.
   use ExUnit.Case, async: true
 
   alias DdDataStreams.Pathway
@@ -36,9 +36,9 @@ defmodule DdDataStreams.PropagatorInteropTest do
              |> Code.eval_string()
              |> elem(0)
 
-  # dd-trace-go's decoder stops reading the nine-byte varint and dd-trace-java
-  # clamps it, so that one entry is asserted separately rather than mixed into
-  # the agreeing set.
+  # dd-trace-go's decoder destroys the nine-byte varint's value in its
+  # millisecond-to-nanosecond conversion and dd-trace-java clamps it, so that
+  # one entry is asserted separately rather than mixed into the agreeing set.
   @wide_start 72_057_594_037_927_936
 
   @epoch_floor_ms 946_684_800_000
@@ -85,8 +85,7 @@ defmodule DdDataStreams.PropagatorInteropTest do
     assert encoded == wide.base64
 
     # The start is far outside any plausible window, so the header is rejected
-    # rather than believed; the varint itself is still parsed in full, which is
-    # what distinguishes this library from dd-trace-go's truncation.
+    # rather than believed; the varint itself is still parsed in full.
     assert Propagator.decode_str(wide.base64) == :error
 
     # dd-trace-py 3.17.0 parses the full varint, so it reads the header this
@@ -94,8 +93,10 @@ defmodule DdDataStreams.PropagatorInteropTest do
     assert wide.python.pathway_start == @wide_start
     assert wide.python.reencoded == encoded
 
-    # dd-trace-go v2 (`DecodeBase64`) stops after seven groups and keeps
-    # part of the timestamp; its encoder writes the truncated value back.
+    # dd-trace-go v2 (`DecodeBase64`) reads the full nine-byte varint, but its
+    # int64 conversion of milliseconds to nanoseconds overflows (2^56 ms *
+    # 10^6 mod 2^64 = 4611686018427387904), so the milliseconds it gets back
+    # are 4611686018427; its encoder writes that value back.
     assert wide.go.pathway_start == 4_611_686_018_427
     assert wide.go.reencoded != encoded
 
