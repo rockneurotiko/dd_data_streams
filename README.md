@@ -793,11 +793,13 @@ message. Measure the message without that pair.
 one MsgPack, gzip-compressed payload per service to
 `<agent-url>/v0.1/pipeline_stats` every ten seconds. Each checkpoint is counted
 twice, in the bucket it belongs to and in the bucket that contains the start of
-its pathway, as the official tracers do; the two entries differ only in bucket
-start and timestamp type. A bucket is dropped before it is sent, so a failed
-send loses that bucket rather than growing memory; the failure is reported via
-telemetry, and nothing is raised. A bucket whose start sits more than a minute
-ahead of the clock (a replayed message, a skewed broker clock) never becomes
+its pathway, as dd-trace-go v2.11.2 does; the two entries differ only in bucket
+start and timestamp type. dd-trace-java 1.67.1 and dd-trace-py 4.16.0 emit one
+bucket per checkpoint and no timestamp type at all. A bucket is dropped before
+it is sent, so a failed send loses that bucket rather than growing memory; the
+failure is reported via telemetry, and nothing is raised. A bucket whose start
+sits more than a minute ahead of the clock (a replayed message, a skewed broker
+clock) never becomes
 due and is dropped at the next flush instead of being held forever; that drop
 is reported on telemetry too. Stopping the aggregator sends
 the partial bucket too, unless the agent has not answered within ten seconds,
