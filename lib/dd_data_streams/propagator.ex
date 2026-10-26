@@ -2,9 +2,11 @@ defmodule DdDataStreams.Propagator do
   @moduledoc """
   The pathway header codec.
 
-  The default header key is `dd-pathway-ctx-base64`, the name the official
-  Datadog tracers use; `DdDataStreams.Config.header/0` is the configured key the
-  library reads and writes. For backwards compatibility with older producers,
+  The convenience arities, `put/2` and `get/1`, use the configured key
+  `DdDataStreams.Config.header/0`, whose default value is
+  `dd-pathway-ctx-base64`, the name the official Datadog tracers use; the
+  explicit-key arities, `put/3` and `get/2`, use the key they are given. For
+  backwards compatibility with older producers,
   `get/2` also falls back to the legacy binary `dd-pathway-ctx` key, decoding
   its raw (non-base64) bytes, when the configured key is absent.
 
@@ -20,6 +22,7 @@ defmodule DdDataStreams.Propagator do
   `get/1` returns `nil` and the consumer starts a new pathway.
   """
 
+  alias DdDataStreams.Config
   alias DdDataStreams.Pathway
 
   import Bitwise
@@ -47,7 +50,8 @@ defmodule DdDataStreams.Propagator do
             when is_tuple(candidate) and tuple_size(candidate) >= 2 and elem(candidate, 0) == key
 
   @doc """
-  Puts the pathway into a message's headers under `key`, which defaults to
+  Puts the pathway into a message's headers under `key`. `put/2` defaults to
+  the configured key `DdDataStreams.Config.header/0`, whose default value is
   `#{@default_header}`.
 
   The headers are either an attribute map or a list of tuples whose first
@@ -59,7 +63,7 @@ defmodule DdDataStreams.Propagator do
   """
   @spec put(map() | [tuple()], Pathway.t()) :: map() | [tuple()]
   @spec put(map() | [tuple()], Pathway.t(), String.t()) :: map() | [tuple()]
-  def put(attributes, pathway), do: put(attributes, pathway, @default_header)
+  def put(attributes, pathway), do: put(attributes, pathway, Config.header())
 
   def put(attributes, %Pathway{hash: 0}, _key), do: attributes
 
@@ -81,7 +85,8 @@ defmodule DdDataStreams.Propagator do
   end
 
   @doc """
-  Reads the pathway out of a message's headers under `key`, which defaults to
+  Reads the pathway out of a message's headers under `key`. `get/1` defaults
+  to the configured key `DdDataStreams.Config.header/0`, whose default value is
   `#{@default_header}`.
 
   The headers are an attribute map or a list of tuples whose first element is
@@ -96,7 +101,7 @@ defmodule DdDataStreams.Propagator do
   """
   @spec get(map() | [tuple()] | nil) :: Pathway.t() | nil
   @spec get(map() | [tuple()] | nil, String.t()) :: Pathway.t() | nil
-  def get(attributes), do: get(attributes, @default_header)
+  def get(attributes), do: get(attributes, Config.header())
 
   def get(attributes, key) when is_map(attributes) do
     if Map.has_key?(attributes, key) do

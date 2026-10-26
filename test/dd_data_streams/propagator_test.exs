@@ -1,5 +1,7 @@
 defmodule DdDataStreams.PropagatorTest do
-  use ExUnit.Case, async: true
+  # Not async: a test sets the configured header key, which every test in the
+  # suite reads through `DdDataStreams.Config.header/0`.
+  use ExUnit.Case, async: false
 
   use Mimic
 
@@ -27,10 +29,29 @@ defmodule DdDataStreams.PropagatorTest do
     start >= @epoch_floor_ms and start <= System.system_time(:millisecond) + 60_000
   end
 
-  test "the wire attribute name is dd-pathway-ctx-base64" do
+  test "put/1 and get/1 use the default key under default configuration" do
     pathway = %Pathway{hash: 1, pathway_start: 0, edge_start: 0}
 
-    assert Map.has_key?(Propagator.put(%{}, pathway), "dd-pathway-ctx-base64")
+    attributes = Propagator.put(%{}, pathway)
+
+    assert Map.has_key?(attributes, "dd-pathway-ctx-base64")
+    assert Propagator.get(attributes) == pathway
+  end
+
+  test "put/1 and get/1 use the configured key end to end" do
+    Application.put_env(:dd_data_streams, :header, "x-pathway")
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :header) end)
+
+    pathway = %Pathway{hash: 1, pathway_start: 0, edge_start: 0}
+
+    attributes = Propagator.put(%{}, pathway)
+
+    refute Map.has_key?(attributes, "dd-pathway-ctx-base64")
+    assert Map.has_key?(attributes, "x-pathway")
+    assert Propagator.get(attributes) == pathway
+
+    list = Propagator.put([], pathway)
+    assert Propagator.get(list) == pathway
   end
 
   test "decodes every header from the official tracers" do
