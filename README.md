@@ -135,10 +135,10 @@ means. It installs two telemetry handlers:
 
 Both events are emitted by Broadway itself, for every producer, so a pipeline
 that runs on Kafka, SQS, RabbitMQ or anything else is attached the same way.
-What changes is how messages are tagged: Pub/Sub is the only shipped extractor
-(see [Broker support](#broker-support)), so another broker needs an extractor
-module of your own before checkpoints are recorded, and SQS additionally needs
-the `_datadog` wrapping described under [SQS wrapping](#sqs-wrapping).
+What changes is how messages are tagged: Kafka, SQS and RabbitMQ have shipped
+extractors and Pub/Sub is the default (see
+[Broker support](#broker-support)), so another broker needs an extractor module
+of your own before checkpoints are recorded.
 
 Calling `attach/0` twice is harmless: telemetry keeps one handler per id, so a
 hot code upgrade does not double the checkpoints.
@@ -247,9 +247,9 @@ change.
 | Broker | Shipped extractor | Carrier | Tested package / version | Status & known limits |
 | --- | --- | --- | --- | --- |
 | Google Pub/Sub | `DdDataStreams.Extractor.GooglePubSub`, the default (`lib/dd_data_streams/extractor/google_pub_sub.ex`) | `DdDataStreams.Carrier.Flat` - attribute maps, header lists, AMQP 3-tuples | `broadway_cloud_pub_sub ~> 2.0.0-rc.2` (`e2e/mix.exs`); `test/dd_data_streams/google_pub_sub_test.exs`, `test/integration/pubsub_emulator_test.exs` | Shipped and tested. Consume checkpoints need 2.0.0-rc or newer: on stable 1.0.0 the metadata carries no `:subscription`, so nothing is recorded. |
-| Amazon SQS | none - in development | `DdDataStreams.Carrier.Sqs`, unit-tested in `test/dd_data_streams/carrier_test.exs` | carrier unit tests only; no BroadwaySQS dependency | The [`_datadog` wrapping](#sqs-wrapping) works today; automatic tagging does not - with no extractor a pipeline records no consume checkpoints. |
-| Kafka | none - in development | `DdDataStreams.Carrier.Flat` - header lists | none; no Kafka client is a dependency | Extractor work in progress; propagation over headers is ready, tagging is not. |
-| RabbitMQ | none - in development | `DdDataStreams.Carrier.Flat` - header lists | none; no RabbitMQ client is a dependency | Extractor work in progress; propagation over headers is ready, tagging is not. |
+| Amazon SQS | `DdDataStreams.Extractor.SQS` (`lib/dd_data_streams/extractor/sqs.ex`) | `DdDataStreams.Carrier.Sqs` - the `_datadog` message attribute | fixtures of BroadwaySQS 1.0.1 metadata in `test/dd_data_streams/sqs_test.exs`; no BroadwaySQS dependency | Shipped and unit-tested. The queue comes from the producer's `queue_url`, and the pipeline must request `message_attribute_names: ["_datadog"]` for the pathway to arrive and `attribute_names: [:sent_timestamp]` for publish latency. |
+| Kafka | `DdDataStreams.Extractor.Kafka` (`lib/dd_data_streams/extractor/kafka.ex`) | `DdDataStreams.Carrier.Flat` - header lists | fixtures of BroadwayKafka 0.7.1 metadata in `test/dd_data_streams/kafka_test.exs`; no Kafka client is a dependency | Shipped and unit-tested. `group:` is reported when the producer's `group_id` is known; `kafka_cluster_id` is not, because BroadwayKafka exposes no cluster id. |
+| RabbitMQ | `DdDataStreams.Extractor.RabbitMQ` (`lib/dd_data_streams/extractor/rabbitmq.ex`) | `DdDataStreams.Carrier.Flat` - AMQP 3-tuples | fixtures of BroadwayRabbitMQ 0.8.2 metadata in `test/dd_data_streams/rabbitmq_test.exs`; no RabbitMQ client is a dependency | Shipped and unit-tested. The queue comes from the producer's `queue:`, and the pipeline must set `metadata: [:headers, :timestamp]` or no header, and no publish time, reaches the pipeline. |
 
 Ground truth is the tree itself: [`lib/dd_data_streams/extractor/`](lib/dd_data_streams/extractor/)
 lists every shipped extractor, [`lib/dd_data_streams/carrier/`](lib/dd_data_streams/carrier/)
@@ -259,8 +259,8 @@ against it.
 
 ### Google Pub/Sub
 
-The one shipped extractor, `DdDataStreams.Extractor.GooglePubSub`, is the
-default when `extractors:` is absent, so a Pub/Sub pipeline configures nothing.
+The default extractor, `DdDataStreams.Extractor.GooglePubSub`, applies when
+`extractors:` is absent, so a Pub/Sub pipeline configures nothing.
 A message names its consume edge by its subscription, and
 `BroadwayCloudPubSub` v2 stamps the subscription, the attributes, the ordering
 key and the receive time, which is everything a checkpoint needs. Consume
@@ -284,6 +284,43 @@ zero. A message that carries a pathway header keeps the start its producer
 wrote; a publish time that is missing or that a clock could not have stamped is
 dropped, as described under [Latency](#latency).
 
+### Kafka
+
+`DdDataStreams.Extractor.Kafka` names the consume edge by the record's topic and
+the produce edge by the topic the host produces to, both as `type:kafka`, and
+adds `group:<consumer group>` when the producer's options carry one. The
+pathway rides in the record headers, so nothing has to be configured for it to
+propagate; the pipeline does have to list this extractor, since Pub/Sub stays
+the default.
+
+The record timestamp is a publish time, so a first-hop message measures from it
+and the consume latency does not include Broadway's buffer. `partition` and
+`offset` are deliberately not tags: a per-partition tag would name whichever
+partition arrived first. What this cannot report, and why, is in the module's
+moduledoc.
+
+### Amazon SQS
+
+`DdDataStreams.Extractor.SQS` is the one extractor that cannot name its edge
+from the message: SQS metadata carries no queue. It takes the queue from the
+producer's `queue_url` and reports `topic:<queue>`, `type:sqs` on both edges, so
+two queues in one application stay two nodes.
+
+Two options belong on the producer, and without the first the pathway never
+arrives:
+
+```elixir
+module:
+  {BroadwaySQS.Producer,
+   queue_url: "https://sqs.eu-west-1.amazonaws.com/123456789012/orders",
+   message_attribute_names: ["_datadog"],
+   attribute_names: [:sent_timestamp]}
+```
+
+`attribute_names: [:sent_timestamp]` is optional and only feeds publish latency.
+The produce side writes the `_datadog` attribute itself, as described under
+[SQS wrapping](#sqs-wrapping).
+
 ### SQS wrapping
 
 For SQS, BroadwaySQS exposes the pathway under the `_datadog` message
@@ -300,6 +337,32 @@ attributes =
     [{key, value}] -> Map.put(attributes, "_datadog", Jason.encode!(%{key => value}))
     [] -> attributes
   end
+```
+
+### RabbitMQ
+
+`DdDataStreams.Extractor.RabbitMQ` names the consume edge by the queue from the
+producer's `queue:` option - never by the exchange, which would split a queue
+bound to several exchanges into several nodes - and reports `type:rabbitmq`.
+The pipeline must ask for the properties it reads, because BroadwayRabbitMQ
+copies none by default:
+
+```elixir
+module: {BroadwayRabbitMQ.Producer, queue: "orders-q", metadata: [:headers, :timestamp]}
+```
+
+An outgoing edge takes two values, the exchange and the routing key, so this is
+the extractor that implements `produce/3` and reads them from the call's
+options. A publish to the default exchange is named by its routing key, as the
+key is the queue; a named exchange is named by `exchange:` with
+`manual_checkpoint:false` and `has_routing_key:`, following dd-trace-java.
+
+```elixir
+DdDataStreams.produce("orders", payload,
+  extractor: DdDataStreams.Extractor.RabbitMQ,
+  exchange: "orders-x",
+  routing_key: "created"
+)
 ```
 
 ### Choosing extractors

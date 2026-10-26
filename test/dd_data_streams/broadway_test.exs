@@ -694,6 +694,10 @@ defmodule DdDataStreams.BroadwayTest do
       DdDataStreams.BroadwayTest.OptionAwareExtractor
     ])
 
+    # Only produce/3 and consume/1 are exported, which also pins that attach/0
+    # accepts an extractor implementing either arity of the produce pair.
+    assert :ok = DdDataStreams.attach()
+
     assert [{key, _value}] =
              DdDataStreams.produce("orders", "payload",
                extractor: DdDataStreams.BroadwayTest.OptionAwareExtractor,
