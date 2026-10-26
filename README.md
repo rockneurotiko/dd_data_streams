@@ -230,9 +230,12 @@ for the first UI data), Data Streams Monitoring shows:
 - `data_streams.payload_size` distributions.
 
 There are no APM traces or spans, and no message-level detail. A consumer-only
-deployment starts a new pathway, so its edge latency is zero. When nothing
-shows up, [Requirements and troubleshooting](#requirements-and-troubleshooting)
-lists the usual causes.
+deployment starts a new pathway: its edge latency is zero unless the broker
+stamps a publish time the extractor believes, in which case - as with
+[Pub/Sub](#google-pub-sub) - it reports how long the message waited in the bus.
+When nothing shows up,
+[Requirements and troubleshooting](#requirements-and-troubleshooting) lists the
+usual causes.
 
 ## Guides
 

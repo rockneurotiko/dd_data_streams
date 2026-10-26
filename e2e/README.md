@@ -71,6 +71,10 @@ that answer. The script therefore puts the environment and the capture
 transport in place first, and starts the application only once that state is
 reached.
 
+The run talks to the emulator at `PUBSUB_EMULATOR_HOST` when it is set and at
+`127.0.0.1:8085` otherwise, so a second emulator on another port needs only that
+variable, not an edit.
+
 Every invocation creates its own topics and subscriptions (`in-topic-<run id>`,
 `out-topic-<run id>`, `e2e-sub-<run id>`, `e2e-out-sub-<run id>`), so a second
 run against the same emulator does not collide with the first. Set `E2E_RUN_ID`

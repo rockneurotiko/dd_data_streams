@@ -22,7 +22,12 @@ defmodule E2e.Token do
 end
 
 defmodule E2e.PubSub do
-  @base "http://127.0.0.1:8085"
+  @base (case System.get_env("PUBSUB_EMULATOR_HOST") do
+           nil -> "http://127.0.0.1:8085"
+           host -> "http://" <> host
+         end)
+
+  def base, do: @base
 
   def create_topic(topic) do
     Req.put!("#{@base}/v1/projects/dsm-test/topics/#{topic}",
@@ -106,6 +111,7 @@ defmodule E2e.Pipeline do
       inbound: inbound,
       subscription: metadata.subscription,
       received_at: metadata.received_at,
+      publish_time: metadata.publishTime,
       consume: consume,
       produce: outgoing.attributes
     })
@@ -264,8 +270,16 @@ defmodule E2e.Verify do
     ["direction:out", "topic:" <> topic, "type:google-pubsub"]
   end
 
-  defp pathway_start(%{inbound: nil}, received_ms), do: received_ms
-  defp pathway_start(%{inbound: inbound}, _received_ms), do: inbound.pathway_start
+  # A message that carries a header keeps the start its producer wrote. One that
+  # does not starts a pathway at the publish time the bus stamped on it, so the
+  # consume side reports how long the message waited; only a message with no
+  # publish time falls back to the receive time.
+  defp pathway_start(%{inbound: %Pathway{pathway_start: start}}, _received_ms), do: start
+
+  defp pathway_start(%{publish_time: %DateTime{} = time}, _received_ms),
+    do: DateTime.to_unix(time, :millisecond)
+
+  defp pathway_start(_entry, received_ms), do: received_ms
 
   defp check!(true, _message), do: :ok
   defp check!(false, message), do: raise("verification failed: #{message}")
@@ -316,7 +330,7 @@ DdDataStreams.attach()
       module:
         {BroadwayCloudPubSub.Pull.Producer,
          subscription: E2e.Resources.sub_resource(),
-         base_url: "http://127.0.0.1:8085",
+         base_url: E2e.PubSub.base(),
          token_generator: {E2e.Token, :fetch, []},
          receive_interval: 200},
       concurrency: 1
