@@ -247,9 +247,9 @@ change.
 | Broker | Shipped extractor | Carrier | Tested package / version | Status & known limits |
 | --- | --- | --- | --- | --- |
 | Google Pub/Sub | `DdDataStreams.Extractor.GooglePubSub`, the default (`lib/dd_data_streams/extractor/google_pub_sub.ex`) | `DdDataStreams.Carrier.Flat` - attribute maps, header lists, AMQP 3-tuples | `broadway_cloud_pub_sub ~> 2.0.0-rc.2` (`e2e/mix.exs`); `test/dd_data_streams/google_pub_sub_test.exs`, `test/integration/pubsub_emulator_test.exs` | Shipped and tested. Consume checkpoints need 2.0.0-rc or newer: on stable 1.0.0 the metadata carries no `:subscription`, so nothing is recorded. |
-| Amazon SQS | `DdDataStreams.Extractor.SQS` (`lib/dd_data_streams/extractor/sqs.ex`) | `DdDataStreams.Carrier.Sqs` - the `_datadog` message attribute | fixtures of BroadwaySQS 1.0.1 metadata in `test/dd_data_streams/sqs_test.exs`; no BroadwaySQS dependency | Shipped and unit-tested. The queue comes from the producer's `queue_url`, and the pipeline must request `message_attribute_names: ["_datadog"]` for the pathway to arrive and `attribute_names: [:sent_timestamp]` for publish latency. |
-| Kafka | `DdDataStreams.Extractor.Kafka` (`lib/dd_data_streams/extractor/kafka.ex`) | `DdDataStreams.Carrier.Flat` - header lists | fixtures of BroadwayKafka 0.7.1 metadata in `test/dd_data_streams/kafka_test.exs`; no Kafka client is a dependency | Shipped and unit-tested. `group:` is reported when the producer's `group_id` is known; `kafka_cluster_id` is not, because BroadwayKafka exposes no cluster id. |
-| RabbitMQ | `DdDataStreams.Extractor.RabbitMQ` (`lib/dd_data_streams/extractor/rabbitmq.ex`) | `DdDataStreams.Carrier.Flat` - AMQP 3-tuples | fixtures of BroadwayRabbitMQ 0.8.2 metadata in `test/dd_data_streams/rabbitmq_test.exs`; no RabbitMQ client is a dependency | Shipped and unit-tested. The queue comes from the producer's `queue:`, and the pipeline must set `metadata: [:headers, :timestamp]` or no header, and no publish time, reaches the pipeline. |
+| Amazon SQS | `DdDataStreams.Extractor.SQS` (`lib/dd_data_streams/extractor/sqs.ex`) | `DdDataStreams.Carrier.Sqs` - the `_datadog` message attribute | `broadway_sqs ~> 1.0.1` (`mix.exs`); `test/dd_data_streams/sqs_test.exs`, `test/integration/sqs_broker_test.exs` (goaws) | Shipped, unit-tested and run against a real SQS API. The queue comes from the producer's `queue_url`, and the pipeline must request `message_attribute_names: ["_datadog"]` for the pathway to arrive and `attribute_names: [:sent_timestamp]` for publish latency. The emulator behind the tier stamps its own receive time as `SentTimestamp`, so send latency is only proven against real SQS. |
+| Kafka | `DdDataStreams.Extractor.Kafka` (`lib/dd_data_streams/extractor/kafka.ex`) | `DdDataStreams.Carrier.Flat` - header lists | `broadway_kafka ~> 0.7.1` (`mix.exs`); `test/dd_data_streams/kafka_test.exs`, `test/integration/kafka_broker_test.exs` (Apache Kafka 4.4) | Shipped, unit-tested and run against a real Kafka. `group:` is reported when the producer's `group_id` is known; `kafka_cluster_id` is not, because BroadwayKafka exposes no cluster id. |
+| RabbitMQ | `DdDataStreams.Extractor.RabbitMQ` (`lib/dd_data_streams/extractor/rabbitmq.ex`) | `DdDataStreams.Carrier.Flat` - AMQP 3-tuples | `broadway_rabbitmq ~> 0.8.2` (`mix.exs`); `test/dd_data_streams/rabbitmq_test.exs`, `test/integration/rabbitmq_broker_test.exs` (RabbitMQ 4.4) | Shipped, unit-tested and run against a real RabbitMQ. The queue comes from the producer's `queue:`, and the pipeline must set `metadata: [:headers, :timestamp]` or no header, and no publish time, reaches the pipeline. On RabbitMQ 4 the producer also needs `declare: [durable: true]`: the default `declare: []` asks for a transient queue, which 4.x refuses. |
 
 Ground truth is the tree itself: [`lib/dd_data_streams/extractor/`](lib/dd_data_streams/extractor/)
 lists every shipped extractor, [`lib/dd_data_streams/carrier/`](lib/dd_data_streams/carrier/)
@@ -257,12 +257,18 @@ every shipped carrier, and [`mix.exs`](mix.exs) has no broker client as a
 dependency - so a row names a tested package only where a test actually runs
 against it.
 
-The Kafka, SQS and RabbitMQ rows are unit-tested against metadata captured from
-the version each names: the mapping from that package's metadata to edge tags
-is checked, but nothing in those three has been run against a live broker. A
-live-broker pass needs the broker, and for SQS and Kafka a real client, none of
-which this repository's suite has. Treat their tag sets as derived from the
-producers' sources and the official tracers, not as observed end to end.
+Each row's tier is a real pipeline on the real client against a real broker:
+`test/integration/{sqs,kafka,rabbitmq}_broker_test.exs` publish a pathway,
+consume it through Broadway, and read the produced pair back off a second
+queue or topic, so the metadata shape, the carrier round trip and the tag set
+are all observed rather than derived. `just sqs`, `just kafka` and `just
+rabbitmq` run them against the containers in `compose.yaml`; they are excluded
+from `mix test`, so the default suite still needs no broker.
+
+What the tiers do not cover: no AWS account, so SQS is a compatible emulator
+and not the service, and its `SentTimestamp` is the receive time; nothing here
+runs against a managed Kafka or a clustered broker; and no tier posts to a real
+Datadog Agent (the [`agent`](#agent) tier covers that separately).
 
 ### Google Pub/Sub
 
@@ -1009,11 +1015,40 @@ mix deps.get
 mix test          # default tier: the offline protocol core
 mix ci            # format, compile, credo, cover over the default tier
 mix docs          # module documentation
+
+just up           # start every broker the tiers use, and wait for health
+just down         # stop them and drop their state
 ```
 
 The suite has tiers for the parts that need something running. They are excluded
 by default, so a plain `mix test` cannot report them as passing while nothing is
 listening.
+
+### `sqs`, `kafka`, `rabbitmq`
+
+One tier per broker, each a real Broadway pipeline on the real client:
+`test/integration/sqs_broker_test.exs` on goaws,
+`test/integration/kafka_broker_test.exs` on Apache Kafka and
+`test/integration/rabbitmq_broker_test.exs` on RabbitMQ. Each publishes a
+pathway into the broker, consumes it through the pipeline, and reads the pair
+`produce/3` returns back off a second queue or topic, so the metadata the client
+builds, the carrier and the tags are all checked against a running broker.
+
+```sh
+just sqs          # start the container, run `mix test --only sqs`, stop it
+just kafka
+just rabbitmq
+just brokers      # all three, one after another
+```
+
+A recipe stops its container only when the tier passes, so a failure leaves the
+broker running with its logs (`docker compose logs sqs`); `just down` cleans up.
+The images are pinned in `compose.yaml`, because a tier asserts the shape one
+client version produces against one broker version.
+
+Each tier is `mix test --only <tag>` underneath, so they also run against a
+broker you already have: `DSM_KAFKA_HOST`, `DSM_SQS_ENDPOINT` and
+`DSM_RABBITMQ_HOST` / `DSM_RABBITMQ_PORT` point a tier elsewhere.
 
 ### `emulator`
 

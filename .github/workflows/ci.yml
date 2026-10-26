@@ -77,6 +77,51 @@ jobs:
       - run: mix test
         if: ${{ !matrix.coverage }}
 
+  broker:
+    name: broker tier (${{ matrix.broker }})
+    needs: test
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    strategy:
+      fail-fast: false
+      matrix:
+        # One container and one tier per leg, so the wall clock is the slowest
+        # broker and not the sum of all of them.
+        broker: [sqs, kafka, rabbitmq]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          elixir-version: "1.20"
+
+      - uses: actions/cache@v5
+        id: cache-deps
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-1.20-29-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-1.20-29-
+
+      - run: mix do deps.get --check-locked, deps.compile
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+
+      # The tier's own container, healthy before the test starts: the same
+      # `compose.yaml` and the same name a contributor uses with `just`.
+      - run: docker compose up -d --wait --wait-timeout 180 ${{ matrix.broker }}
+
+      # A real pipeline on the real client: the extractor's metadata shape, the
+      # carrier round trip through the broker, and the tags are all asserted.
+      - run: mix test --only ${{ matrix.broker }}
+
+      - name: Broker logs
+        if: failure()
+        run: docker compose logs ${{ matrix.broker }}
+
   emulator:
     name: broker tier (Pub/Sub emulator)
     needs: test

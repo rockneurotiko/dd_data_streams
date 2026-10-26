@@ -44,6 +44,15 @@ defmodule DdDataStreams.MixProject do
       # The Broadway integration is telemetry only, so a real pipeline is a test
       # dependency and never shipped.
       {:broadway, "~> 1.0", only: :test},
+      # The broker tiers run a real Broadway pipeline against a real broker, so
+      # each client is a test dependency. The library still ships none.
+      {:broadway_kafka, "~> 0.7.1", only: :test},
+      {:broadway_rabbitmq, "~> 0.8.2", only: :test},
+      # `runtime: false` keeps `:aws_credentials` from starting: its provider
+      # chain probes the EC2 metadata endpoint at boot, which costs a few
+      # seconds on every suite run. The tier passes credentials to the client
+      # explicitly, so nothing reads them from the environment.
+      {:broadway_sqs, "~> 1.0.1", only: :test, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:mimic, "~> 1.7", only: :test}

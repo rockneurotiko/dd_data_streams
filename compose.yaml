@@ -1,0 +1,51 @@
+# The brokers the `mix test --only <broker>` tiers talk to. Nothing here runs
+# on a plain `mix test`: each tier is tagged and excluded, and `just <broker>`
+# brings up only the container that tier needs.
+#
+# Every service is pinned: the tier asserts the shape a specific client version
+# produces against a specific broker version, so an image that drifts silently
+# would make the assertion untrue.
+name: dsm
+
+services:
+  kafka:
+    image: apache/kafka:4.4.0
+    ports:
+      - 127.0.0.1:9092:9092
+    healthcheck:
+      # A topic list is the cheapest request that answers "can a client talk to
+      # this broker", which is what the tier needs.
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null",
+        ]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+
+  sqs:
+    image: admiralpiett/goaws:v0.5.4
+    ports:
+      - 127.0.0.1:4100:4100
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:4100/health"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+
+  rabbitmq:
+    image: rabbitmq:4.4-management-alpine
+    environment:
+      # `guest` only connects from the container's loopback, and a mapped port
+      # does not look like loopback to RabbitMQ.
+      RABBITMQ_DEFAULT_USER: dsm
+      RABBITMQ_DEFAULT_PASS: dsm
+    ports:
+      - 127.0.0.1:5672:5672
+      - 127.0.0.1:15672:15672
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 1s
+      timeout: 10s
+      retries: 60

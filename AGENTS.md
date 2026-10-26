@@ -17,10 +17,27 @@ case.
 
 ## Tests
 
-Start the Pub/Sub emulator in Docker on port 8085 before running the suite. The
-`emulator` and `agent` tiers are excluded from `mix test` by default, so only a
-running emulator lets them reach a real broker; use the command under `###
-emulator` in the README with project `dsm-test`, then run that tier with
+`mix test` is the offline protocol core. The tiers that need something running
+are tagged and excluded: `emulator`, `agent`, `sqs`, `kafka` and `rabbitmq`.
+
+The three broker tiers run a real Broadway pipeline on the real client against
+the container of the same name in `compose.yaml`. Use the recipes rather than
+starting containers by hand, so local and CI do the same thing:
+
+```sh
+just sqs        # compose up --wait sqs, mix test --only sqs, compose stop sqs
+just kafka
+just rabbitmq
+just brokers    # all three
+```
+
+A recipe leaves its container running when the tier fails, for
+`docker compose logs <broker>`; `just down` cleans up. Add a tier by tagging its
+module, excluding the tag in `test/test_helper.exs`, adding the service to
+`compose.yaml`, adding a recipe, and adding the tag to the CI `broker` matrix.
+
+The Pub/Sub emulator tier is separate and still started by hand, as the command
+under `### emulator` in the README describes (project `dsm-test`), then
 `PUBSUB_EMULATOR_HOST=127.0.0.1:8085 mix test --only emulator`.
 
 ## Agent skills
