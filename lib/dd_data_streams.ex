@@ -126,13 +126,15 @@ defmodule DdDataStreams do
   is the configured `DdDataStreams.Extractor`'s business. Attaching fails with an
   `ArgumentError` when `config :dd_data_streams, extractors:` is not a non-empty
   list of extractors, rather than leaving a handler attached that cannot name an
-  edge.
+  edge. The extractors are validated even while the library is disabled, so a
+  configuration mistake raises when the application starts instead of waiting
+  for the flag to be flipped.
   """
   @spec attach() :: :ok
   def attach do
-    if Config.enabled?() do
-      ensure_extractors!(extractors())
+    ensure_extractors!(extractors())
 
+    if Config.enabled?() do
       case :telemetry.attach_many(@handler_id, @events, &__MODULE__.handle_event/4, %{}) do
         :ok -> :ok
         {:error, :already_exists} -> :ok
@@ -140,6 +142,67 @@ defmodule DdDataStreams do
     else
       :ok
     end
+  end
+
+  @doc """
+  Removes the telemetry handlers `attach/0` installed, so recording stops
+  without restarting the application.
+
+  Broadway events are no longer recorded afterwards; `consume/1`, `produce/3`
+  and `checkpoint/1` keep working as plain functions while the library is
+  enabled, and checkpoints already handed to the aggregator are still flushed.
+
+  Calling it when nothing is attached returns `:ok` too, so a test can end with
+  it unconditionally, and `attach/0` and `detach/0` may be interleaved freely.
+  """
+  @spec detach() :: :ok
+  def detach do
+    case :telemetry.detach(@handler_id) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+    end
+  end
+
+  @doc """
+  The library's effective configuration and liveness, as one map, answered from
+  the local VM: no Datadog Agent, no aggregator flush, nothing that can block.
+
+    * `:enabled` - what `attach/0`, `produce/3` and `produce_batch/3` obey.
+    * `:attached` - whether the Broadway telemetry handlers are installed.
+    * `:aggregator_running` - whether the process that batches checkpoints and
+      posts them is running.
+    * `:transport`, `:agent_url`, `:header`, `:service`, `:env`,
+      `:extractors` - the effective values of the same settings the recording
+      itself reads, as of this call.
+
+  "Is it recording?" is all three of `:enabled`, `:attached` and
+  `:aggregator_running`: the flag decides whether new checkpoints are made, the
+  handlers decide whether Broadway events make any, and the aggregator decides
+  whether what they make is ever posted.
+  """
+  @spec status() :: %{
+          enabled: boolean(),
+          attached: boolean(),
+          aggregator_running: boolean(),
+          transport: module() | nil,
+          agent_url: String.t(),
+          header: String.t(),
+          service: String.t(),
+          env: String.t(),
+          extractors: [module()]
+        }
+  def status do
+    %{
+      enabled: Config.enabled?(),
+      attached: :telemetry.list_handlers(@consume_event) != [],
+      aggregator_running: not is_nil(Process.whereis(Aggregator)),
+      transport: Config.transport(),
+      agent_url: Config.agent_url(),
+      header: Config.header(),
+      service: Config.service(),
+      env: Config.env(),
+      extractors: extractors()
+    }
   end
 
   @doc """

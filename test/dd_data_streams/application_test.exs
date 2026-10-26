@@ -1,6 +1,8 @@
 defmodule DdDataStreams.ApplicationTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   @moduletag :capture_log
 
   alias DdDataStreams.Aggregator
@@ -90,6 +92,18 @@ defmodule DdDataStreams.ApplicationTest do
 
     refute Process.whereis(Aggregator)
     assert Supervisor.which_children(supervisor) == []
+  end
+
+  test "starting the aggregator logs the effective configuration" do
+    System.put_env("DD_DATA_STREAMS_ENABLED", "true")
+
+    log = capture_log(fn -> start_application() end)
+
+    assert log =~ "data streams monitoring starts:"
+    assert log =~ "transport=DdDataStreams.Transport.Req"
+    assert log =~ "agent_url="
+    assert log =~ "header=\"dd-pathway-ctx-base64\""
+    assert log =~ "extractors=[DdDataStreams.Extractor.GooglePubSub]"
   end
 
   test "an aggregator that is already running is left alone" do

@@ -44,6 +44,7 @@ defmodule DdDataStreams.Application do
   defp children do
     if Config.enabled?() and is_nil(Process.whereis(Aggregator)) do
       warn_if_no_transport()
+      log_effective_configuration()
 
       [
         %{
@@ -67,5 +68,18 @@ defmodule DdDataStreams.Application do
           "every flush would be dropped"
       )
     end
+  end
+
+  # One line naming what this aggregator is started with, so the log alone says
+  # what is being recorded without inspecting the running system.
+  defp log_effective_configuration do
+    status = DdDataStreams.status()
+
+    Logger.info(
+      "data streams monitoring starts: transport=#{inspect(status.transport)} " <>
+        "agent_url=#{status.agent_url} header=#{inspect(status.header)} " <>
+        "service=#{inspect(status.service)} env=#{inspect(status.env)} " <>
+        "extractors=#{inspect(status.extractors)}"
+    )
   end
 end

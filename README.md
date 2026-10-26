@@ -306,6 +306,28 @@ only thing that changes is the extractors.
 Calling `attach/0` twice is harmless: telemetry keeps one handler per id, so a
 hot code upgrade does not double the checkpoints.
 
+`attach/0` validates the configured extractors before it attaches and raises
+`ArgumentError` when `config :dd_data_streams, extractors:` is not a non-empty
+list of extractor modules. That validation runs even while the library is
+disabled, so a configuration mistake fails when the application starts instead
+of waiting for the flag to be flipped.
+
+To stop recording without restarting the application, `DdDataStreams.detach/0`
+removes the handlers `attach/0` installed:
+
+```elixir
+DdDataStreams.attach()
+# ...
+DdDataStreams.detach()
+```
+
+It returns `:ok` whether or not anything was attached, so a test can end with it
+unconditionally; checkpoints already handed to the aggregator are still flushed.
+`DdDataStreams.status/0` answers "is it recording?" from the local VM - no
+Datadog Agent needed - with the enabled flag, whether the handlers are attached,
+whether the aggregator is running, and the effective transport, agent URL,
+header, service, environment and extractors.
+
 ### Choosing extractors
 
 An extractor turns a Broadway message's `metadata` into the edge it arrived on.
