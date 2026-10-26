@@ -55,7 +55,8 @@ an application can list several to run pipelines on more than one bus at once.
 * `DdDataStreams.Config`: the environment and application settings that
   configure the library.
 * `DdDataStreams.Transport`: the behaviour for posting to the Agent, with a Req
-  implementation as the default.
+  implementation as the default and a `DdDataStreams.Transport.Capture`
+  implementation for tests.
 
 ## SQS wrapping
 
@@ -620,6 +621,95 @@ The flag is read in two different places, and the difference matters:
 
 Restart the application to change whether the aggregator runs.
 
+## Testing your pipeline
+
+What a test suite should do depends on what it is testing: the pipeline's own
+code, or the library's effect on it. Both recipes start in `config/test.exs`.
+
+### Unit tests: turn the library off
+
+```elixir
+# config/test.exs
+config :dd_data_streams, enabled: false
+```
+
+With the flag off, `attach/0` installs no handlers, `produce/3` and
+`produce_batch/3` return `[]`, `consume/1` and `checkpoint/1` record nothing,
+and no aggregator is started when the application boots. The pipeline code
+under test makes the same calls and takes the same branches as in production,
+but touches nothing global, so every test can be `async: true`: there is no
+handler id and no aggregator process for two tests to fight over.
+
+### Integration tests: keep it on and capture the flushes
+
+```elixir
+# config/test.exs
+config :dd_data_streams,
+  enabled: true,
+  transport: DdDataStreams.Transport.Capture
+```
+
+`DdDataStreams.Transport.Capture` posts nothing: each flush is reported on the
+`[:dd_data_streams, :transport, :captured]` telemetry event, whose metadata is
+`%{url: url, headers: headers, body: body}` with the exact gzip-compressed
+payload the agent would have received (`:zlib.gunzip/1` reads it back). The
+aggregator is started when the application boots, reading this transport like
+any other.
+
+A test attaches a handler under its own id, so it receives only what is
+flushed while it runs, and calls `DdDataStreams.Aggregator.flush(:all)` to
+send every bucket at once - including the one still being filled, which
+`flush/0` keeps until its ten-second window completes. A checkpoint recorded a
+moment ago is therefore assertable immediately:
+
+```elixir
+# In an async: false test: it observes the shared aggregator's flushes.
+defmodule MyApp.OrdersTest do
+  use ExUnit.Case, async: false
+
+  setup do
+    test = self()
+    handler = "capture-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:dd_data_streams, :transport, :captured],
+      fn _event, _measurements, metadata, _config -> send(test, {:captured, metadata}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    :ok
+  end
+
+  test "the produce checkpoint reaches the aggregator" do
+    [{_key, _value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
+
+    :ok = DdDataStreams.Aggregator.flush(:all)
+
+    assert_receive {:captured, %{body: body}}
+    assert :zlib.gunzip(body) =~ "topic:orders-out"
+  end
+end
+```
+
+A test that exercises the Broadway handlers ends with `DdDataStreams.detach/0`,
+which removes the handlers `attach/0` installed and returns `:ok` whether or
+not anything was attached, so `on_exit` can call it unconditionally.
+
+### The handler id is fixed
+
+`attach/0` installs its handlers under one VM-global telemetry id,
+`:dd_data_streams`, and `detach/0` removes that one id for the whole VM. Two
+async tests that each attach and detach would therefore race: one test's
+cleanup removes the handlers the other is still recording with. Tests that
+call `attach/0` or `detach/0` - anything exercising the Broadway path - run
+with `async: false`. Tests that never attach are unaffected: every unit test
+with the library disabled, and any test that calls `consume/1`, `produce/3`
+or `checkpoint/1` directly, never touches the id. The capture handler above
+uses a per-test id of its own, so it never collides either.
+
 ## What is reported
 
 ### Edge tags
@@ -685,12 +775,23 @@ telemetry, and nothing is raised. Stopping the aggregator sends
 the partial bucket too, unless the agent has not answered within ten seconds,
 in which case the node keeps shutting down without it.
 
+`DdDataStreams.Aggregator.flush(:all)` sends every bucket immediately, the
+partial one included; `flush/0` keeps its meaning of complete buckets only.
+That is the seam a test uses to assert on a checkpoint without waiting for the
+window - see [Testing your pipeline](#testing-your-pipeline).
+
 The aggregator is started and supervised by `:dd_data_streams` itself, so the
 host does not add it to its own supervision tree.
 
 ## Telemetry
 
-The library emits two events:
+The library emits three events:
+
+* `[:dd_data_streams, :transport, :captured]`, once per flush through
+  `DdDataStreams.Transport.Capture`, with `%{count: 1}` measurements and
+  `%{url: url, headers: headers, body: body}` metadata. Only a suite that
+  configured the capture transport (see
+  [Testing your pipeline](#testing-your-pipeline)) ever sees it.
 
 * `[:dd_data_streams, :flush, :error]`, once per failed Agent flush, with
   `%{count: 1}` measurements and `%{service: service, reason: reason}` metadata.

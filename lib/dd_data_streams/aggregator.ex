@@ -17,8 +17,12 @@ defmodule DdDataStreams.Aggregator do
   in milliseconds, so they are scaled here; the payload size defaults to zero.
 
   `flush/0` sends the buckets that are complete, meaning their start is not
-  newer than ten seconds ago, and keeps the bucket still being filled. A bucket
-  is removed before it is sent, so a failed send drops it: it is counted in
+  newer than ten seconds ago, and keeps the bucket still being filled.
+  `flush(:all)` sends every bucket, the still-being-filled one included, as
+  stopping the process does.
+
+  A bucket is removed before it is sent, so a failed send drops it: it is
+  counted in
   `[:dd_data_streams, :flush, :error]` telemetry with a `count` measurement,
   and nothing is raised. Stopping the process sends everything,
   including the partial bucket, unless the agent has not answered within ten
@@ -91,12 +95,27 @@ defmodule DdDataStreams.Aggregator do
   request after ten seconds.
   """
   @spec flush() :: :ok
-  def flush do
+  def flush, do: call(:flush)
+
+  @doc """
+  Sends every bucket, including the one still being filled.
+
+  This is the test seam: a checkpoint recorded a moment ago lands in the
+  current bucket, which `flush/0` keeps until the window completes, while
+  `flush(:all)` sends it at once - so with a capture transport in place a test
+  asserts on it immediately. `flush/0` keeps its meaning: only complete
+  buckets go, and the partial one waits for the next flush. Like `flush/0`,
+  this does nothing when the aggregator is not running.
+  """
+  @spec flush(:all) :: :ok
+  def flush(:all), do: call({:flush, :all})
+
+  defp call(request) do
     case Process.whereis(__MODULE__) do
       nil -> :ok
       # The transport enforces its own timeouts; the caller waits for the sends
       # either way.
-      pid -> GenServer.call(pid, :flush, :infinity)
+      pid -> GenServer.call(pid, request, :infinity)
     end
   end
 
@@ -158,6 +177,12 @@ defmodule DdDataStreams.Aggregator do
   @impl true
   def handle_call(:flush, _from, state) do
     {:reply, :ok, flush_due(state, System.system_time(:millisecond) * 1_000_000)}
+  end
+
+  # :infinity is the cutoff the shutdown flush uses: every bucket goes,
+  # including the partial one and any stamped ahead of the clock.
+  def handle_call({:flush, :all}, _from, state) do
+    {:reply, :ok, flush_due(state, :infinity)}
   end
 
   @impl true
