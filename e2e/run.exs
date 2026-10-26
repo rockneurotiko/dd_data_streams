@@ -94,8 +94,8 @@ defmodule E2e.Pipeline do
 
     attributes =
       case DdDataStreams.produce(E2e.Resources.out_topic(), outgoing_data) do
-        [{key, value}] -> %{key => value}
-        [] -> %{}
+        [{key, value}] -> Map.put(attributes, key, value)
+        [] -> attributes
       end
 
     outgoing = %{data: outgoing_data, attributes: attributes, ordering_key: nil}
@@ -177,6 +177,11 @@ defmodule E2e.Verify do
         encoded = entry.produce["dd-pathway-ctx-base64"]
         check!(encoded != nil, "a published message carries no pathway attribute")
 
+        check!(
+          Map.has_key?(entry.produce, "origin"),
+          "merged inbound attributes did not survive the produce"
+        )
+
         produce_hash =
           Pathway.pathway_hash(node_hash(produce_tags(E2e.Resources.out_topic())), consume_hash)
 
@@ -205,6 +210,14 @@ defmodule E2e.Verify do
     check!(
       Enum.all?(published, &is_binary/1),
       "a published message reached the broker without a pathway attribute"
+    )
+
+    check!(
+      Enum.all?(out_messages, fn
+        %{"message" => %{"attributes" => attrs}} when is_map(attrs) -> Map.has_key?(attrs, "origin")
+        _ -> false
+      end),
+      "inbound attributes did not survive to the broker"
     )
 
     check!(captured != [], "the aggregator flushed nothing to the agent")

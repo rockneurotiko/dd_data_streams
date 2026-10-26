@@ -34,10 +34,12 @@ defmodule DdDataStreams do
       def handle_message(_processor, message, _context) do
         data = encode(message.data)
 
+        attributes = existing_attributes
+
         attributes =
           case DdDataStreams.produce("orders-out", data) do
-            [{key, value}] -> %{key => value}
-            [] -> %{}
+            [{key, value}] -> Map.put(attributes, key, value)
+            [] -> attributes
           end
 
         MyApp.Publisher.publish("orders-out", data, attributes: attributes)
@@ -188,10 +190,15 @@ defmodule DdDataStreams do
   It does not publish. The caller adds the pair to the same metadata the
   receiver will read:
 
-      case DdDataStreams.produce("orders-out", data) do
-        [{key, value}] -> MyApp.PubSub.publish("orders-out", data, attributes: %{key => value})
-        [] -> MyApp.PubSub.publish("orders-out", data)
-      end
+      attributes = existing_attributes
+
+      attributes =
+        case DdDataStreams.produce("orders-out", data) do
+          [{key, value}] -> Map.put(attributes, key, value)
+          [] -> attributes
+        end
+
+      MyApp.PubSub.publish("orders-out", data, attributes: attributes)
 
   The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
   configured. The pathway continued is the one in `DdDataStreams.Context`, so
@@ -264,10 +271,12 @@ defmodule DdDataStreams do
   every message because the batch shares one produce node. Add it to each
   message's metadata:
 
+      attributes = existing_attributes
+
       attributes =
         case DdDataStreams.produce_batch("orders-out", payloads) do
-          [{key, value}] -> %{key => value}
-          [] -> %{}
+          [{key, value}] -> Map.put(attributes, key, value)
+          [] -> attributes
         end
 
       MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)

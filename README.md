@@ -66,10 +66,13 @@ read the pathway and merges a produced header into it, so a producer wraps the
 attribute's JSON rather than adding it as a separate attribute:
 
 ```elixir
-attributes = case DdDataStreams.produce("orders", data) do
-  [{key, value}] -> %{"_datadog" => Jason.encode!(%{key => value})}
-  [] -> %{}
-end
+attributes = existing_attributes
+
+attributes =
+  case DdDataStreams.produce("orders", data) do
+    [{key, value}] -> Map.put(attributes, "_datadog", Jason.encode!(%{key => value}))
+    [] -> attributes
+  end
 ```
 
 ## Installation
@@ -108,10 +111,12 @@ defmodule MyApp.Orders do
   def publish(order) do
     data = Jason.encode!(order)
 
+    attributes = existing_attributes
+
     attributes =
       case DdDataStreams.produce("orders", data) do
-        [{key, value}] -> %{key => value}
-        [] -> %{}
+        [{key, value}] -> Map.put(attributes, key, value)
+        [] -> attributes
       end
 
     MyApp.PubSub.publish("orders", data, attributes: attributes)
@@ -131,10 +136,12 @@ checkpoint per payload and returns one pair for the whole batch:
 def publish_orders(orders) do
   payloads = Enum.map(orders, &Jason.encode!/1)
 
+  attributes = existing_attributes
+
   attributes =
     case DdDataStreams.produce_batch("orders", payloads) do
-      [{key, value}] -> %{key => value}
-      [] -> %{}
+      [{key, value}] -> Map.put(attributes, key, value)
+      [] -> attributes
     end
 
   MyApp.PubSub.publish_batch("orders", payloads, attributes: attributes)
@@ -144,8 +151,15 @@ end
 Kafka uses the same pair as a header:
 
 ```elixir
-[{key, value}] = DdDataStreams.produce("orders", data)
-MyApp.Kafka.produce("orders", data, headers: [{key, value}])
+headers = existing_headers
+
+headers =
+  case DdDataStreams.produce("orders", data) do
+    [{key, value}] -> headers ++ [{key, value}]
+    [] -> headers
+  end
+
+MyApp.Kafka.produce("orders", data, headers: headers)
 ```
 
 The `[...]` pattern assumes the library is enabled; the Pub/Sub example
@@ -176,10 +190,12 @@ defmodule MyApp.Pipeline do
   def handle_message(_processor, message, _context) do
     data = Jason.encode!(handle(message.data))
 
+    attributes = existing_attributes
+
     attributes =
       case DdDataStreams.produce("orders-out", data) do
-        [{key, value}] -> %{key => value}
-        [] -> %{}
+        [{key, value}] -> Map.put(attributes, key, value)
+        [] -> attributes
       end
 
     MyApp.PubSub.publish("orders-out", data, attributes: attributes)
@@ -207,10 +223,12 @@ pathway =
   })
 
 # In the same process:
+out_attributes = existing_attributes
+
 out_attributes =
   case DdDataStreams.produce("orders-out", out_data) do
-    [{key, value}] -> %{key => value}
-    [] -> %{}
+    [{key, value}] -> Map.put(out_attributes, key, value)
+    [] -> out_attributes
   end
 
 MyApp.PubSub.publish("orders-out", out_data, attributes: out_attributes)
@@ -320,12 +338,14 @@ def handle_message(_processor, message, _context) do
   # Consumed from Kafka, publishing to Pub/Sub.
   data = encode(message.data)
 
+  attributes = existing_attributes
+
   attributes =
     case DdDataStreams.produce("orders-out", data,
            extractor: DdDataStreams.Extractor.GooglePubSub
          ) do
-      [{key, value}] -> %{key => value}
-      [] -> %{}
+      [{key, value}] -> Map.put(attributes, key, value)
+      [] -> attributes
     end
 
   MyApp.PubSub.publish("orders-out", data, attributes: attributes)
@@ -344,10 +364,12 @@ that `attach/0` filled in for this message:
 def handle_message(_processor, message, _context) do
   data = encode(message.data)
 
+  attributes = existing_attributes
+
   attributes =
     case DdDataStreams.produce("orders-out", data) do
-      [{key, value}] -> %{key => value}
-      [] -> %{}
+      [{key, value}] -> Map.put(attributes, key, value)
+      [] -> attributes
     end
 
   MyApp.PubSub.publish("orders-out", data, attributes: attributes)
@@ -359,8 +381,15 @@ The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
 configured. A client that takes a header list uses the same pair:
 
 ```elixir
-[{key, value}] = DdDataStreams.produce("orders-out", data)
-MyApp.Kafka.produce("orders-out", data, headers: [{key, value}])
+headers = existing_headers
+
+headers =
+  case DdDataStreams.produce("orders-out", data) do
+    [{key, value}] -> headers ++ [{key, value}]
+    [] -> headers
+  end
+
+MyApp.Kafka.produce("orders-out", data, headers: headers)
 ```
 
 Fan-in re-derives each message's consume checkpoint from the batch
@@ -378,10 +407,12 @@ the whole batch, so one send can answer the whole batch:
 def handle_batch(_processor, messages, _batch_info, _context) do
   payloads = Enum.map(messages, &encode(&1.data))
 
+  attributes = existing_attributes
+
   attributes =
     case DdDataStreams.produce_batch("orders-out", payloads) do
-      [{key, value}] -> %{key => value}
-      [] -> %{}
+      [{key, value}] -> Map.put(attributes, key, value)
+      [] -> attributes
     end
 
   MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)
@@ -423,10 +454,12 @@ pathway =
 # LATER, when the message is answered, in the same process:
 data = encode(reply)
 
+attributes = existing_attributes
+
 attributes =
   case DdDataStreams.produce("orders-out", data) do
-    [{key, value}] -> %{key => value}
-    [] -> %{}
+    [{key, value}] -> Map.put(attributes, key, value)
+    [] -> attributes
   end
 
 MyApp.PubSub.publish("orders-out", data, attributes: attributes)

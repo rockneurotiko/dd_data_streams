@@ -18,10 +18,15 @@ defmodule DdDataStreams.Context do
       pathway = my_stage_consume_pathway
       :ok = DdDataStreams.Context.put(pathway)
 
-      case DdDataStreams.produce(topic, data) do
-        {key, value} -> MyApp.Publisher.publish(topic, data, attributes: %{key => value})
-        nil -> MyApp.Publisher.publish(topic, data)
-      end
+      attributes = existing_attributes
+
+      attributes =
+        case DdDataStreams.produce(topic, data) do
+          [{key, value}] -> Map.put(attributes, key, value)
+          [] -> attributes
+        end
+
+      MyApp.Publisher.publish(topic, data, attributes: attributes)
 
   The context is per stage process and is overwritten by each message, so it is
   not cleared when a message is done: until the next message arrives it holds
