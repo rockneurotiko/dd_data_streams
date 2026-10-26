@@ -14,11 +14,13 @@
 # start, which the re-encoded header covers instead.
 #
 # The last entry is the widest varint the format allows, timestamps of 2^56 milliseconds.
-# dd-trace-py and this library read it back exactly; dd-trace-go stops early and reports
-# 4611686018427 (its encoder then writes that truncated value), and dd-trace-java clamps the
-# start to the largest signed long, so neither re-encodes to the same bytes. It is recorded
-# rather than corrected because it is what those decoders do, and a timestamp of that
-# magnitude is not a wall clock any tracer produces.
+# dd-trace-py and this library read it back exactly. Go decodes the nine-byte varint correctly,
+# but the value is destroyed by an int64 overflow converting milliseconds to nanoseconds:
+# 2^56 ms * 10^6 mod 2^64 = 4611686018427387904, /10^6 = 4611686018427, which its encoder then
+# writes back. dd-trace-java clamps the start to the largest signed long, so neither
+# re-encodes to the same bytes. They are recorded rather than corrected because they are what
+# those decoders do, and a timestamp of that magnitude is not a wall clock any tracer
+# produces.
 [
   %{
     provenance: "Pathway{hash: 234, pathway_start: 1700000000000, edge_start: 1700003600000}",

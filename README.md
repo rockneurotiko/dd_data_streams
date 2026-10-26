@@ -41,8 +41,11 @@ an application can list several to run pipelines on more than one bus at once.
 * `DdDataStreams.Pathway`: the pathway struct and its hashing, the identity of a
   node and of an edge.
 * `DdDataStreams.Propagator`: the pathway header codec (default key
-  `dd-pathway-ctx-base64`), byte compatible with the official Datadog tracers,
-  over an attribute map or a header list.
+  `dd-pathway-ctx-base64`), byte compatible with the official Datadog tracers
+  (dd-trace-go v2.11.2, dd-trace-java 1.67.1 and dd-trace-py 3.17.0 verified)
+  for every timestamp a real clock produces; the widest varint the format
+  allows diverges, and that divergence is recorded in the interop fixture. It
+  works over an attribute map or a header list.
 * `DdDataStreams.Carrier`: broker-specific carriers for the pathway header.
   `Flat` handles attribute maps and header lists; `Sqs` unwraps the `_datadog`
   JSON message attribute BroadwaySQS exposes.
@@ -869,9 +872,17 @@ The HTTP request is best effort and is not retried.
 The pathway travels in the `dd-pathway-ctx-base64` header by default, which is
 the same format dd-trace-go, dd-trace-java and dd-trace-py use: the 64-bit FNV-1
 hash of the node in little-endian byte order followed by two zigzag varints of
-Unix milliseconds, base64 encoded. Headers written by any of those tracers
-decode here, and headers written here decode there. A malformed header is
-ignored and the message starts a new pathway.
+Unix milliseconds, base64 encoded. Headers written by those tracers decode
+here, and headers written here decode there, for every timestamp a real clock
+produces: the widest varint the format allows (timestamps of 2^56 milliseconds)
+diverges. dd-trace-py reads it back exactly, but dd-trace-go's decoder
+overflows its int64 millisecond-to-nanosecond conversion and reports
+4611686018427, and dd-trace-java clamps the start to the largest signed long,
+so neither re-encodes the same bytes. That divergence is recorded in
+`test/fixtures/interop/reference_decoders.txt` rather than corrected. The
+claims here were verified against dd-trace-go v2.11.2, dd-trace-java 1.67.1 and
+dd-trace-py 3.17.0. A malformed header is ignored and the message starts a new
+pathway.
 
 For backwards compatibility, when the configured key is absent the library also
 reads a legacy binary header under `dd-pathway-ctx`, decoding its raw

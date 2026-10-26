@@ -15,8 +15,11 @@ defmodule DdDataStreams.Propagator do
   the pathway start and the edge start as zigzag-encoded varints of Unix
   milliseconds, with no separator or length prefix, and the whole thing is
   standard base64. The timestamps are length-parsed rather than assumed to be a
-  fixed width, so a header written by any official tracer decodes here and a
-  header written here decodes there.
+  fixed width, so a header written by an official tracer decodes here and a
+  header written here decodes there for every timestamp a real clock produces;
+  the widest varint the format allows diverges, and that divergence is recorded
+  in the interoperability fixtures. Verified against dd-trace-go v2.11.2,
+  dd-trace-java 1.67.1 and dd-trace-py 3.17.0.
 
   A malformed or missing header is not an error condition for a pipeline:
   `get/1` returns `nil` and the consumer starts a new pathway. `fetch/1` tells
