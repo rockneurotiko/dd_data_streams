@@ -639,6 +639,22 @@ defmodule DdDataStreams.BroadwayTest do
     assert Context.get() == nil
   end
 
+  test "checkpoint/1 defaults the pathway to the current context" do
+    pathway = DdDataStreams.checkpoint(["direction:in", "type:internal-queue"])
+
+    assert %DdDataStreams.Pathway{} = pathway
+  end
+
+  test "checkpoint tags must all be binaries" do
+    assert_raise ArgumentError, fn ->
+      DdDataStreams.checkpoint(Pathway.new(hash: 234), [:foo, 42])
+    end
+
+    assert_raise ArgumentError, fn ->
+      DdDataStreams.checkpoint([:foo, 42])
+    end
+  end
+
   # The header dd-trace-py propagated in its own botocore test suite, i.e. a
   # value a real tracer put on a message rather than one this library encoded.
   defp reference_header do

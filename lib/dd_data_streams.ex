@@ -308,9 +308,11 @@ defmodule DdDataStreams do
   aggregator, so it is not returned; use `Pathway.set_checkpoint/3` if you
   need the measurement itself.
 
-  `pathway` is the pathway to continue - `DdDataStreams.Context.get/0` for the
-  one the current stage consumed - and `tags` are the edge tags reported for
-  this stage, such as `["direction:in", "type:my-queue"]`. `DdDataStreams.Tags`
+  `checkpoint/1` defaults `pathway` to `DdDataStreams.Context.get/0` (or a new
+  pathway when there is none); `checkpoint/2` takes it explicitly, for a stage
+  that wants to continue a pathway it already holds. `tags` are the edge tags
+  reported for this stage, such as `["direction:in", "type:my-queue"]`.
+  `DdDataStreams.Tags`
   decides what each key does with them: some are hashed into the node, and
   others, such as `group:` or `manual_checkpoint:true`, split one node's
   statistics without splitting its identity. A key the vocabulary does not know
@@ -320,8 +322,17 @@ defmodule DdDataStreams do
   given to the aggregator. The caller's context is left alone: this is a
   checkpoint in the middle of a pathway, not a new stage to produce from.
   """
+  @spec checkpoint([String.t()]) :: Pathway.t()
+  def checkpoint(tags) when is_list(tags) do
+    validate_checkpoint_tags!(tags)
+
+    checkpoint(Context.get() || Pathway.new(%{}), tags)
+  end
+
   @spec checkpoint(Pathway.t(), [String.t()]) :: Pathway.t()
   def checkpoint(%Pathway{} = pathway, tags) when is_list(tags) do
+    validate_checkpoint_tags!(tags)
+
     {pathway, checkpoint} =
       Pathway.set_checkpoint(pathway, tags,
         service: Config.service(),
@@ -536,6 +547,16 @@ defmodule DdDataStreams do
   # every attribute it arrives with, so the produce side counts the pair it is
   # about to send and both sides of one edge measure the same message.
   defp header_size({key, value}), do: byte_size(key) + byte_size(value)
+
+  # Checkpoint tags are reported verbatim, so a non-binary can never be split
+  # into a key and value later; reject it at the boundary instead of dropping
+  # it silently in the aggregator.
+  defp validate_checkpoint_tags!(tags) do
+    unless Enum.all?(tags, &is_binary/1) do
+      raise ArgumentError,
+            "checkpoint tags must all be binaries, got: #{inspect(tags)}"
+    end
+  end
 
   defp extractors do
     Application.get_env(:dd_data_streams, @extractors_key, @default_extractors)

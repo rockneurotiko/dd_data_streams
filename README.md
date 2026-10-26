@@ -454,7 +454,6 @@ an internal queue, and takes its edge tags verbatim:
 ```elixir
 pathway =
   DdDataStreams.checkpoint(
-    DdDataStreams.Context.get() || DdDataStreams.Pathway.new(%{}),
     ["direction:in", "type:internal-queue", "manual_checkpoint:true"]
   )
 ```
