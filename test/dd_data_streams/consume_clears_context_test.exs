@@ -1,31 +1,37 @@
 defmodule DdDataStreams.ConsumeClearsContextTest do
   use ExUnit.Case, async: false
 
-  use Mimic
+  alias DdDataStreams.{Context, Pathway, Testing}
 
-  alias DdDataStreams.{Aggregator, Context, Pathway}
-
+  @backend DdDataStreams.Testing.Backend
   @extractor DdDataStreams.ConsumeClearsContextTest.Extractor
 
   setup do
     variables = ~w(DD_SERVICE DD_ENV DD_DATA_STREAMS_ENABLED)
 
     previous = Map.new(variables, &{&1, System.get_env(&1)})
+    previous_backend = Application.fetch_env(:dd_data_streams, :backend)
     Enum.each(variables, &System.delete_env/1)
 
     System.put_env("DD_SERVICE", "checkout")
     System.put_env("DD_ENV", "prod")
     System.put_env("DD_DATA_STREAMS_ENABLED", "true")
 
+    Application.put_env(:dd_data_streams, :backend, @backend)
     Context.clear()
     Application.put_env(:dd_data_streams, :extractors, [@extractor])
 
-    test = self()
-    stub(Aggregator, :add, fn checkpoint -> send(test, {:checkpoint, checkpoint}) end)
+    Testing.set_private()
+    Testing.start()
 
     on_exit(fn ->
       Context.clear()
       Application.delete_env(:dd_data_streams, :extractors)
+
+      case previous_backend do
+        {:ok, configured} -> Application.put_env(:dd_data_streams, :backend, configured)
+        :error -> Application.delete_env(:dd_data_streams, :backend)
+      end
 
       for {name, value} <- previous do
         if value, do: System.put_env(name, value), else: System.delete_env(name)
@@ -42,8 +48,8 @@ defmodule DdDataStreams.ConsumeClearsContextTest do
     assert %Pathway{} = pathway = DdDataStreams.consume(match)
     assert pathway.hash != 0
 
-    # Drain the consume checkpoint.
-    assert_receive {:checkpoint, _}
+    # The consume checkpoint is already stored, not waiting for a flush.
+    assert [%{edge_tags: ["direction:in" | _]}] = Testing.checkpoints()
 
     assert DdDataStreams.consume(no_match) == nil
     assert Context.get() == nil
@@ -51,9 +57,10 @@ defmodule DdDataStreams.ConsumeClearsContextTest do
     assert [{key, _value}] = DdDataStreams.produce("orders", "payload")
     assert key == "dd-pathway-ctx-base64"
 
-    assert_receive {:checkpoint, produce_checkpoint}
     # A cleared context makes produce chain onto a fresh (hash 0) pathway.
-    assert produce_checkpoint.parent_hash == 0
+    assert produce = Testing.assert_produced("orders")
+    assert produce.parent_hash == 0
+    assert length(Testing.checkpoints()) == 2
   end
 end
 

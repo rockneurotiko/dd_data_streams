@@ -6,11 +6,9 @@ defmodule DdDataStreams.PipelineTest do
   # the emitting process can never cover.
   use ExUnit.Case, async: false
 
-  use Mimic
+  alias DdDataStreams.{Context, Pathway, Propagator, Testing}
 
-  alias DdDataStreams.{Aggregator, Context, Pathway, Propagator}
-
-  @events [[:broadway, :processor, :message, :start], [:broadway, :batch_processor, :start]]
+  @backend DdDataStreams.Testing.Backend
 
   @subscription "orders-sub"
   @consume_tags ["direction:in", "subscription:" <> @subscription, "type:google-pubsub"]
@@ -18,22 +16,28 @@ defmodule DdDataStreams.PipelineTest do
   @metadata %{subscription: @subscription, orderingKey: "customer-1"}
 
   setup do
-    detach_all()
+    previous = Application.fetch_env(:dd_data_streams, :backend)
+    Application.put_env(:dd_data_streams, :backend, @backend)
+
+    Testing.set_private()
+    Testing.start()
     Context.clear()
 
-    # Checkpoints are recorded by Broadway's own processes, not by the test's,
-    # so every process has to see the stub.
-    set_mimic_global()
-    test = self()
-    stub(Aggregator, :add, fn checkpoint -> send(test, {:checkpoint, checkpoint}) end)
-
     pipeline = :"dd_data_streams_pipeline_#{System.unique_integer([:positive])}"
-    start_supervised!({DdDataStreams.PipelineTest.Pipeline, name: pipeline, test: test})
+    start_supervised!({DdDataStreams.PipelineTest.Pipeline, name: pipeline, test: self()})
+
+    :ok = Testing.allow(self(), :"#{pipeline}.Broadway.Processor_default_0")
+    :ok = Testing.allow(self(), :"#{pipeline}.Broadway.BatchProcessor_default_0")
+    assert :ok = DdDataStreams.attach()
 
     on_exit(fn ->
-      detach_all()
+      DdDataStreams.detach()
       Context.clear()
-      set_mimic_private()
+
+      case previous do
+        {:ok, configured} -> Application.put_env(:dd_data_streams, :backend, configured)
+        :error -> Application.delete_env(:dd_data_streams, :backend)
+      end
     end)
 
     {:ok, pipeline: pipeline}
@@ -42,14 +46,12 @@ defmodule DdDataStreams.PipelineTest do
   test "a message answered from both stages records one consume and two produces", %{
     pipeline: pipeline
   } do
-    assert :ok = DdDataStreams.attach()
-
     ack = Broadway.test_message(pipeline, "hello", metadata: @metadata)
     assert_receive {:ack, ^ack, [%{data: "hello"}], []}
 
-    recorded = checkpoints(3)
-    [consumed] = Enum.filter(recorded, &(&1.tags == @consume_tags))
-    produces = Enum.filter(recorded, &(&1.tags == @produce_tags))
+    recorded = Testing.checkpoints()
+    [consumed] = Enum.filter(recorded, &(&1.edge_tags == @consume_tags))
+    produces = Enum.filter(recorded, &(&1.edge_tags == @produce_tags))
     assert length(produces) == 2
     assert Enum.all?(produces, &(&1.parent_hash == consumed.hash))
 
@@ -70,14 +72,12 @@ defmodule DdDataStreams.PipelineTest do
   end
 
   test "a batch records one consume per message and fans them in", %{pipeline: pipeline} do
-    assert :ok = DdDataStreams.attach()
-
     ack = Broadway.test_batch(pipeline, ["one", "two", "three"], metadata: @metadata)
     assert_receive {:ack, ^ack, messages, []}
     assert length(messages) == 3
 
-    recorded = checkpoints(9)
-    consumed = Enum.filter(recorded, &(&1.tags == @consume_tags))
+    recorded = Testing.checkpoints()
+    consumed = Enum.filter(recorded, &(&1.edge_tags == @consume_tags))
     assert length(consumed) == 3
 
     # Fan-in keeps one pathway of the batch's, so the whole batch is published
@@ -86,7 +86,7 @@ defmodule DdDataStreams.PipelineTest do
     assert merged.hash in Enum.map(consumed, & &1.hash)
     assert {:ok, %Pathway{hash: hash}} = Propagator.decode_str(value)
 
-    produces = Enum.filter(recorded, &(&1.tags == @produce_tags))
+    produces = Enum.filter(recorded, &(&1.edge_tags == @produce_tags))
     assert length(produces) == 6
     assert Enum.all?(produces, &(&1.parent_hash == merged.hash))
     assert Enum.all?(produces, &(&1.hash == hash))
@@ -129,18 +129,5 @@ defmodule DdDataStreams.PipelineTest do
 
       messages
     end
-  end
-
-  defp checkpoints(count) do
-    for _ <- 1..count do
-      assert_receive {:checkpoint, checkpoint}, 1_000
-      checkpoint
-    end
-  end
-
-  defp detach_all do
-    Enum.each(@events, fn event ->
-      for %{id: id} <- :telemetry.list_handlers(event), do: :telemetry.detach(id)
-    end)
   end
 end

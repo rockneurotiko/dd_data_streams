@@ -62,11 +62,7 @@ defmodule DdDataStreams.OwnerScopedSyncTest do
   end
 
   test "the backend exposes a child specification for a supervision tree" do
-    assert %{
-             id: DdDataStreams.Testing.Backend,
-             start: {DdDataStreams.Testing.Backend, :start_link, [[]]}
-           } =
-             DdDataStreams.Testing.Backend.child_spec([])
+    assert %{id: @backend, start: {@backend, :start_link, [[]]}} = @backend.child_spec([])
   end
 
   test "an unowned private test cannot subscribe or start a missing name" do
