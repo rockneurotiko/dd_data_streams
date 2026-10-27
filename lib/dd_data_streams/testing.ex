@@ -1,35 +1,284 @@
 defmodule DdDataStreams.Testing do
   @moduledoc """
-  Turning the library on around a single test, and reading back what it flushed.
+  Testing support for a host application.
 
-  `DdDataStreams.Application` decides once, at boot, whether the aggregator
-  runs, so a test that flips `enabled` by itself records into an aggregator
-  that is not there. `enable!/1` performs the whole flip for the test: it sets
-  the configuration, attaches the Broadway handlers and starts the aggregator
-  when it is not already running, and returns the function that puts
-  everything back:
+  There are two ways to record with this library in a test, and the first one
+  is the default:
 
-      setup do
-        on_exit(DdDataStreams.Testing.enable!(transport: DdDataStreams.Transport.Capture))
-        :ok
+    * Owner-scoped. Configure `DdDataStreams.Testing.Backend`, start it from
+      `test_helper.exs`, and call `start/1` in a test that wants checkpoints.
+      Recording is per test, so tests can run with `async: true`, and nothing
+      has to be flushed or waited for. This is the API to reach for.
+    * Global. `enable!/1` and `capture/1` flip the application environment,
+      the shared aggregator and the VM-wide telemetry handler id. They are the
+      `async: false` tools for tests that need the full wire-format path
+      through the aggregator and the capture transport.
+
+  ## Owner-scoped tests
+
+      # config/test.exs
+      config :dd_data_streams, backend: DdDataStreams.Testing.Backend
+
+      # test/test_helper.exs
+      {:ok, _} = DdDataStreams.Testing.Backend.start_link()
+
+      defmodule MyApp.OrdersTest do
+        use ExUnit.Case, async: true
+        use DdDataStreams.Testing
+
+        test "the consume checkpoint links to the produce checkpoint" do
+          DdDataStreams.Testing.start()
+
+          [{_key, value}] = DdDataStreams.produce("orders-out", payload)
+
+          DdDataStreams.consume(%{
+            data: payload,
+            metadata: %{
+              subscription: "projects/demo/subscriptions/orders-sub",
+              attributes: %{DdDataStreams.Config.header() => value}
+            }
+          })
+
+          produce = DdDataStreams.Testing.assert_produced("orders-out")
+          consume = DdDataStreams.Testing.assert_consumed("orders-sub")
+          DdDataStreams.Testing.assert_chained(produce, consume)
+        end
       end
 
-  `capture/1` then runs a function with that transport in place and hands back
-  the points that reached it, decoded by `decode_payload/1` into plain maps, so
-  a test asserts on `hash` and `parent_hash` instead of on gunzipped bytes.
+  `use DdDataStreams.Testing` only picks private mode for an async case and
+  shared mode otherwise. A test opts in by calling `start/1`; a test that never
+  does sees `produce/3` return `[]`, records nothing, and can run alongside the
+  others. A process a test did not start, such as a Broadway processor, is
+  allowed with `allow/2`, by pid or by registered name. `checkpoints/1` reads
+  the result, and `subscribe/0` turns the same points into messages when a test
+  prefers `assert_receive`.
 
-  A test using either runs with `async: false`: the aggregator, the application
-  environment and the Broadway handler id are all shared by the whole VM.
+  ## Global tests
+
+  `enable!/1` and `capture/1` keep their old meaning. They set `:enabled` and
+  the transport, start the shared aggregator and attach the shared handler id,
+  so a test using either runs with `async: false`. Use them when the test needs
+  what only that path gives: an encoded payload through the real aggregator,
+  or the wire-format bytes the agent would receive.
   """
 
+  import ExUnit.Assertions, only: [assert: 2]
+
   alias DdDataStreams.Aggregator
+  alias DdDataStreams.Testing.Backend
+
+  # The backend module exists only when the optional :nimble_ownership dependency
+  # does; the owner-scoped functions below say so at call time instead of
+  # failing to compile in an application that never uses them.
+  @compile {:no_warn_undefined, DdDataStreams.Testing.Backend}
 
   @config_keys [:enabled, :transport, :service, :env]
   @option_keys [:transport, :service, :env]
   @capture_event [:dd_data_streams, :transport, :captured]
 
   @doc """
-  Enables the library for one test and returns the function that undoes it.
+  Sets up the owner-scoped mode from the ExUnit context.
+
+  Picks private mode when the test module is `async: true` and shared mode
+  otherwise, so a test module only needs:
+
+      use ExUnit.Case, async: true
+      use DdDataStreams.Testing
+
+  In private mode each test still opts in with `start/1`. In shared mode every
+  process records into the test process, so `allow/2` is not needed. A module
+  whose context already chose a mode can call `set_private/0` or `set_global/1`
+  itself instead.
+  """
+  defmacro __using__(_opts) do
+    quote do
+      setup context do
+        DdDataStreams.Testing.set_from_context(context)
+      end
+    end
+  end
+
+  @doc """
+  Makes `owner` (the calling process by default) an owner of the checkpoints.
+
+  After this call, `produce/3`, `produce_batch/3`, `consume/1`, `checkpoint/1`
+  and the Broadway handlers record into `owner`, and `checkpoints/1` reads what
+  they recorded. Calling it again is harmless. A `Task` records into the owner
+  that spawned it without this call, because it inherits `$callers`; any other
+  process needs `allow/2`.
+
+  Returns `:ok`. Raises when the ownership server is not running, because a
+  test that thinks it is recording and is not is worse than a failed test.
+
+  In shared mode the shared owner receives the checkpoints, so `start/1` is not
+  needed there; calling it with the shared owner is harmless.
+  """
+  @spec start(pid() | atom()) :: :ok
+  def start(owner \\ self()) do
+    ensure_backend!()
+    Backend.start(owner)
+  end
+
+  @doc """
+  Allows another process to record into `owner`.
+
+  Broadway processor and batcher processes are started by Broadway, not by the
+  test, so they are not in the test's `$callers` and need this call. Both
+  arguments accept a pid or a registered name:
+
+      DdDataStreams.Testing.start()
+      DdDataStreams.Testing.allow(self(), :"my_pipeline.Broadway.Processor_0")
+
+  Returns `:ok`, or `{:error, %NimbleOwnership.Error{}}` when the ownership
+  server refuses the allowance (for example in shared mode, where every process
+  already records into the same owner).
+  """
+  @spec allow(pid() | atom(), pid() | atom()) :: :ok | {:error, struct()}
+  def allow(owner, allowed) do
+    ensure_backend!()
+    Backend.allow(owner, allowed)
+  end
+
+  @doc """
+  The checkpoints recorded for `owner` (the calling process by default), oldest
+  first.
+
+  Each point is a plain map shaped like the points `decode_payload/1` returns:
+  `:edge_tags`, `:hash`, `:parent_hash`, `:pathway_latency`, `:edge_latency`,
+  `:payload_size` and `:timestamp_type`. The latencies and the size are the
+  integers the checkpoint measured, not the flushed distributions, and
+  `:timestamp_type` is `"current"` because this is the checkpoint itself rather
+  than an aggregator bucket.
+
+  Reading is synchronous: `record/1` in the backend has already stored the
+  point by the time the call that produced it returns, so no flush or wait is
+  needed. A test that never called `start/1` gets `[]`. In shared mode the
+  shared owner's points are returned.
+  """
+  @spec checkpoints(pid() | atom()) :: [map()]
+  def checkpoints(owner \\ self()) do
+    ensure_backend!()
+    Backend.checkpoints(owner)
+  end
+
+  @doc """
+  Subscribes the calling owner to checkpoint messages.
+
+  Every point recorded after this call is also sent to the owner as
+  `{DdDataStreams.Testing, :checkpoint, point}`, with the same map
+  `checkpoints/1` returns. It is the push alternative for tests that prefer
+  `assert_receive`; `checkpoints/1` is the default because it cannot lose a
+  point to a mailbox order.
+  """
+  @spec subscribe() :: :ok
+  def subscribe do
+    ensure_backend!()
+    Backend.subscribe()
+  end
+
+  @doc """
+  Asserts that a produce checkpoint was recorded for `topic`.
+
+  Returns the point, so a test can chain more assertions on it:
+
+      produce = DdDataStreams.Testing.assert_produced("orders-out")
+      assert "type:google-pubsub" in produce.edge_tags
+  """
+  @spec assert_produced(String.t(), pid() | atom()) :: map()
+  def assert_produced(topic, owner \\ self()) do
+    assert_point(owner, ["direction:out", "topic:#{topic}"], "produce on topic #{topic}")
+  end
+
+  @doc """
+  Asserts that a consume checkpoint was recorded for `subscription`.
+
+  Returns the point, like `assert_produced/2`.
+  """
+  @spec assert_consumed(String.t(), pid() | atom()) :: map()
+  def assert_consumed(subscription, owner \\ self()) do
+    assert_point(
+      owner,
+      ["direction:in", "subscription:#{subscription}"],
+      "consume on subscription #{subscription}"
+    )
+  end
+
+  @doc """
+  Asserts that `consume` continues the pathway `produce` started.
+
+  `produce` and `consume` are points returned by `assert_produced/2` and
+  `assert_consumed/2`, or read from `checkpoints/1`. Returns `consume`.
+  """
+  @spec assert_chained(map(), map()) :: map()
+  def assert_chained(produce, consume) do
+    assert consume.parent_hash == produce.hash,
+           "expected the consume parent_hash #{inspect(consume.parent_hash)} " <>
+             "to be the produce hash #{inspect(produce.hash)}"
+
+    consume
+  end
+
+  @doc """
+  Switches the ownership server to private mode.
+
+  This is the default mode and the one `set_from_context/1` picks for an
+  `async: true` case.
+  """
+  @spec set_private() :: :ok
+  @spec set_private(map()) :: :ok
+  def set_private(_context \\ %{}) do
+    ensure_backend!()
+    Backend.set_private()
+  end
+
+  @doc """
+  Switches the ownership server to shared mode: every process records into the
+  calling test process.
+
+  Raises when the ExUnit context is `async: true`, because a shared owner would
+  receive another test's checkpoints.
+  """
+  @spec set_global(map()) :: :ok
+  def set_global(context) do
+    ensure_backend!()
+    Backend.set_global(context)
+  end
+
+  @doc """
+  Picks `set_private/0` for an `async: true` case and `set_global/1` otherwise.
+  """
+  @spec set_from_context(map()) :: :ok
+  def set_from_context(context) do
+    ensure_backend!()
+    Backend.set_from_context(context)
+  end
+
+  defp assert_point(owner, tags, description) do
+    point = Enum.find(checkpoints(owner), &Enum.all?(tags, fn tag -> tag in &1.edge_tags end))
+
+    assert point,
+           "expected a #{description} checkpoint, got: #{inspect(checkpoints(owner))}"
+
+    point
+  end
+
+  defp ensure_backend! do
+    unless Code.ensure_loaded?(Backend) do
+      raise "the owner-scoped testing API needs the optional :nimble_ownership dependency; " <>
+              "add {:nimble_ownership, \"~> 1.0\"} to your deps"
+    end
+
+    :ok
+  end
+
+  @doc """
+  Global, `async: false` mode: enables the library for one test and returns the
+  function that undoes it.
+
+  This is the aggregator-and-wire-format path. For tests that only want to see
+  the checkpoints a pipeline records, prefer the owner-scoped API (`start/1`
+  and `checkpoints/1`), which leaves the shared application environment and
+  aggregator alone and can run with `async: true`.
 
   Sets `enabled: true` and any of the options `:transport`, `:service` and
   `:env:` that are given, attaches the handlers `DdDataStreams.attach/0`
@@ -121,8 +370,12 @@ defmodule DdDataStreams.Testing do
   end
 
   @doc """
-  Runs `fun`, flushes every bucket, and returns the points the transport
-  captured while it ran.
+  Global, `async: false` mode: runs `fun`, flushes every bucket, and returns
+  the points the transport captured while it ran.
+
+  What it flushes is the one shared aggregator, so a test using it must not run
+  next to another test that records. For the owner-scoped checkpoints a
+  pipeline records, use `checkpoints/1` instead.
 
   Attaches a handler of its own under a unique id to
   `[:dd_data_streams, :transport, :captured]`, so it sees exactly what is

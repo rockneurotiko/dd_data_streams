@@ -6,6 +6,11 @@
 # the application's is stopped here rather than left running for the suite.
 Application.stop(:dd_data_streams)
 
+# The owner-scoped test backend in test/dd_data_streams/owner_scoped_test.exs is
+# configured per module; its ownership server is one process for the suite, as a
+# host's test_helper.exs would start it.
+{:ok, _} = DdDataStreams.Testing.Backend.start_link()
+
 Mimic.copy(DdDataStreams.Aggregator)
 Mimic.copy(DdDataStreams.Transport.Req)
 
