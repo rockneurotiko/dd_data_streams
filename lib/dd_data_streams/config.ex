@@ -18,8 +18,10 @@ defmodule DdDataStreams.Config do
 
   When each setting is read (see also the README table):
 
-    * `enabled?/0` - on attach, produce and consume, and once at application
-      start for the aggregator, which then keeps that answer.
+    * `enabled?/0` - on attach, and through `DdDataStreams.Backend.Aggregator`
+      on every produce, consume and checkpoint and in the Broadway handlers;
+      once at application start for the aggregator, which then keeps that
+      answer.
     * `service/0`, `env/0`, `primary_tag/0` - per checkpoint; `service/0` and
       `env/0` again when building the payload.
     * `version/0` - when building the payload, on flush.
@@ -34,12 +36,14 @@ defmodule DdDataStreams.Config do
   when the application starts and keeps that answer: turning the flag on
   afterwards installs handlers that record checkpoints into an aggregator that
   is not running, and `DdDataStreams.Aggregator.add/1` drops every one - the
-  first drop in each process is logged at warning level; turning it off
-  afterwards stops header injection and further handler installation, but
-  handlers installed earlier stay attached and keep recording into the
-  aggregator that is still running. Restart the application to change whether
-  the aggregator runs, or let `DdDataStreams.Testing.enable!/1` flip the flag
-  around a single test and start the aggregator for that test.
+  first drop in each process is logged at warning level. Turning it off
+  afterwards stops header injection, and the handlers installed earlier stay
+  attached but stop recording because the default backend reads the flag per
+  event; turning it back on resumes them. The aggregator itself keeps running
+  and flushes what it already holds either way. Restart the application to
+  change whether the aggregator runs, or let
+  `DdDataStreams.Testing.enable!/1` flip the flag around a single test and start
+  the aggregator for that test.
 
   An application that does not depend on the optional Req brings no default
   transport: the aggregator starts with none, the start logs an error naming

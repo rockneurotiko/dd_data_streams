@@ -102,12 +102,13 @@ defmodule DdDataStreams do
   pipeline that drives the library itself, and `checkpoint/2` records one for a
   stage that is neither a consume nor a produce.
 
-  Checkpoints are handed to `DdDataStreams.Aggregator.add/1`, which does nothing
-  when the aggregator is not running, so none of these needs to be guarded at
-  the call site while the library is disabled.
+  Checkpoints are handed to the configured `DdDataStreams.Backend`, which drops
+  them when the calling process is not recording (the default backend delegates
+  to `DdDataStreams.Aggregator.add/1`, which does nothing when the aggregator
+  is not running), so none of these needs to be guarded at the call site.
   """
 
-  alias DdDataStreams.{Aggregator, Checkpoints, Config, Context, Pathway, Propagator}
+  alias DdDataStreams.{Aggregator, Backend, Checkpoints, Config, Context, Pathway, Propagator}
 
   require Logger
 
@@ -138,6 +139,13 @@ defmodule DdDataStreams do
   nothing when the library is disabled, and calling it again is harmless:
   telemetry keeps one handler per id and the second call returns `:ok` instead
   of failing, so a hot code upgrade does not double the checkpoints.
+
+  Once installed, a handler records only when the configured
+  `DdDataStreams.Backend` says the emitting process is recording, so a test
+  suite can attach once at boot and leave the handlers attached: a test that
+  did not opt in emits events the handlers turn into no-ops. Only tests that
+  attach or detach themselves, or that use the global aggregator testing API,
+  still need `async: false`.
 
   Which broker a message comes from, and which edge tags it is reported under,
   is the configured `DdDataStreams.Extractor`'s business. Attaching fails with an
@@ -184,7 +192,9 @@ defmodule DdDataStreams do
   The library's effective configuration and liveness, as one map, answered from
   the local VM: no Datadog Agent, no aggregator flush, nothing that can block.
 
-    * `:enabled` - what `attach/0`, `produce/3` and `produce_batch/3` obey.
+    * `:enabled` - the configured flag. `attach/0` reads it, and so does the
+      default `DdDataStreams.Backend.Aggregator`; a configured backend answers
+      whether a particular process records for itself.
     * `:attached` - whether the Broadway telemetry handlers are installed.
     * `:aggregator_running` - whether the process that batches checkpoints and
       posts them is running.
@@ -193,9 +203,10 @@ defmodule DdDataStreams do
       itself reads, as of this call.
 
   "Is it recording?" is all three of `:enabled`, `:attached` and
-  `:aggregator_running`: the flag decides whether new checkpoints are made, the
-  handlers decide whether Broadway events make any, and the aggregator decides
-  whether what they make is ever posted.
+  `:aggregator_running` for the default backend: the flag decides whether new
+  checkpoints are made, the handlers decide whether Broadway events make any,
+  and the aggregator decides whether what they make is ever posted. With a
+  configured backend, ask that backend whether the calling process records.
   """
   @spec status() :: %{
           enabled: boolean(),
@@ -259,7 +270,7 @@ defmodule DdDataStreams do
         nil
 
       {pathway, checkpoint} ->
-        Aggregator.add(checkpoint)
+        if Backend.enabled?(), do: Backend.record(checkpoint)
         Context.put(pathway)
 
         pathway
@@ -345,7 +356,7 @@ defmodule DdDataStreams do
   def produce(topic, data, opts \\ []) when is_binary(topic) do
     size = payload_size(data, opts)
 
-    if Config.enabled?() do
+    if Backend.enabled?() do
       {pathway, checkpoint} =
         Checkpoints.produce(
           produce_tags(topic, opts),
@@ -354,7 +365,7 @@ defmodule DdDataStreams do
         )
 
       pair = {Config.header(), Propagator.encode_str(pathway)}
-      Aggregator.add(%{checkpoint | payload_size: checkpoint.payload_size + header_size(pair)})
+      Backend.record(%{checkpoint | payload_size: checkpoint.payload_size + header_size(pair)})
       [pair]
     else
       []
@@ -400,7 +411,7 @@ defmodule DdDataStreams do
             ":payload_size is not supported by produce_batch/3; call produce/3 per message"
     end
 
-    if Config.enabled?() do
+    if Backend.enabled?() do
       case produce_all(topic, Enum.to_list(datas), opts) do
         [] -> []
         pair -> [pair]
@@ -448,7 +459,7 @@ defmodule DdDataStreams do
         primary_tag: Config.primary_tag()
       )
 
-    Aggregator.add(checkpoint)
+    if Backend.enabled?(), do: Backend.record(checkpoint)
 
     pathway
   end
@@ -461,61 +472,65 @@ defmodule DdDataStreams do
   # extractor cannot name records nothing instead of failing.
   @spec handle_event([atom()], map(), map(), map()) :: :ok
   def handle_event(@consume_event, _measurements, metadata, _config) do
-    try do
-      case consume_message(
-             Map.get(metadata, :message),
-             Map.get(metadata, :topology_name),
-             Map.get(metadata, :producer)
-           ) do
-        # A message that records no checkpoint must not leave the pathway of the
-        # previous message behind for a later produce in this stage to continue.
-        nil -> Context.clear()
-        _recorded -> :ok
+    if Backend.enabled?() do
+      try do
+        case consume_message(
+               Map.get(metadata, :message),
+               Map.get(metadata, :topology_name),
+               Map.get(metadata, :producer)
+             ) do
+          # A message that records no checkpoint must not leave the pathway of the
+          # previous message behind for a later produce in this stage to continue.
+          nil -> Context.clear()
+          _recorded -> :ok
+        end
+      rescue
+        error -> skipped(@consume_event, error, __STACKTRACE__)
+      catch
+        kind, reason -> skipped(@consume_event, {kind, reason}, __STACKTRACE__)
       end
-    rescue
-      error -> skipped(@consume_event, error, __STACKTRACE__)
-    catch
-      kind, reason -> skipped(@consume_event, {kind, reason}, __STACKTRACE__)
     end
 
     :ok
   end
 
   def handle_event(@fan_in_event, _measurements, metadata, _config) do
-    try do
-      topology = Map.get(metadata, :topology_name)
-      producer = Map.get(metadata, :producer)
+    if Backend.enabled?() do
+      try do
+        topology = Map.get(metadata, :topology_name)
+        producer = Map.get(metadata, :producer)
 
-      resolved =
-        metadata
-        |> Map.get(:messages)
-        |> List.wrap()
-        |> Enum.map(&checkpointed(&1, topology, producer))
-        |> Enum.reject(&is_nil/1)
+        resolved =
+          metadata
+          |> Map.get(:messages)
+          |> List.wrap()
+          |> Enum.map(&checkpointed(&1, topology, producer))
+          |> Enum.reject(&is_nil/1)
 
-      # Sample one consumed message's pathway, with the extractor and producer
-      # info it was consumed with, so a mixed-broker batch cannot pair one
-      # broker's pathway with another's identity. Fan-in re-derives consume
-      # checkpoints from the batch messages' metadata, so a handle_message/3
-      # that replaces metadata entirely leaves the batch parentless (documented
-      # as unsupported).
-      pathway =
-        case resolved do
-          [] ->
-            Pathway.merge([])
+        # Sample one consumed message's pathway, with the extractor and producer
+        # info it was consumed with, so a mixed-broker batch cannot pair one
+        # broker's pathway with another's identity. Fan-in re-derives consume
+        # checkpoints from the batch messages' metadata, so a handle_message/3
+        # that replaces metadata entirely leaves the batch parentless (documented
+        # as unsupported).
+        pathway =
+          case resolved do
+            [] ->
+              Pathway.merge([])
 
-          _ ->
-            {sampled, _checkpoint} = Enum.random(resolved)
-            sampled
-        end
+            _ ->
+              {sampled, _checkpoint} = Enum.random(resolved)
+              sampled
+          end
 
-      # The batch stage is another process, so it needs the extractor and the
-      # producer info of the sampled message for its own produce edges.
-      Context.put(pathway)
-    rescue
-      error -> skipped(@fan_in_event, error, __STACKTRACE__)
-    catch
-      kind, reason -> skipped(@fan_in_event, {kind, reason}, __STACKTRACE__)
+        # The batch stage is another process, so it needs the extractor and the
+        # producer info of the sampled message for its own produce edges.
+        Context.put(pathway)
+      rescue
+        error -> skipped(@fan_in_event, error, __STACKTRACE__)
+      catch
+        kind, reason -> skipped(@fan_in_event, {kind, reason}, __STACKTRACE__)
+      end
     end
 
     :ok
@@ -684,7 +699,7 @@ defmodule DdDataStreams do
     pair = {Config.header(), Propagator.encode_str(pathway)}
 
     Enum.each(datas, fn data ->
-      Aggregator.add(%{checkpoint | payload_size: bytes(data) + header_size(pair)})
+      Backend.record(%{checkpoint | payload_size: bytes(data) + header_size(pair)})
     end)
 
     pair
