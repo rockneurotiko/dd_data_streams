@@ -3,6 +3,8 @@ defmodule DdDataStreams.TestingTest do
   # both global to the VM, so nothing here can run async.
   use ExUnit.Case, async: false
 
+  doctest DdDataStreams.Testing
+
   @moduletag :capture_log
 
   alias DdDataStreams.Aggregator
@@ -123,5 +125,42 @@ defmodule DdDataStreams.TestingTest do
 
     refute DdDataStreams.status().enabled
     refute Process.whereis(Aggregator)
+  end
+
+  test "capture/1 returns the points flushed while fun ran, decoded" do
+    cleanup = Testing.enable!(transport: DdDataStreams.Transport.Capture)
+
+    points =
+      Testing.capture(fn ->
+        [{_key, value}] = DdDataStreams.produce("orders-out", "payload")
+
+        DdDataStreams.consume(%{
+          data: "payload",
+          metadata: %{
+            subscription: "projects/demo/subscriptions/orders-sub",
+            attributes: %{DdDataStreams.Config.header() => value}
+          }
+        })
+      end)
+
+    cleanup.()
+
+    produce = Enum.find(points, &("topic:orders-out" in &1.edge_tags))
+    consume = Enum.find(points, &("subscription:orders-sub" in &1.edge_tags))
+
+    assert produce
+    assert consume
+
+    # The consume continues the pathway the produce wrote into the header, so
+    # its parent is the produce node, and both are points of one flush.
+    assert consume.parent_hash == produce.hash
+    assert consume.parent_hash != 0
+    assert is_integer(produce.hash)
+    assert is_binary(produce.pathway_latency)
+    assert produce.timestamp_type in ["current", "origin"]
+  end
+
+  test "capture/1 returns [] when there is nothing to flush" do
+    assert Testing.capture(fn -> :ok end) == []
   end
 end

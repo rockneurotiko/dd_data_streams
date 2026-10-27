@@ -10,6 +10,11 @@
   running, and returns the cleanup that stops what it started, detaches what
   it attached and restores the previous application environment. A test suite
   no longer has to restart the application around each test.
+- `DdDataStreams.Testing.capture/1` runs a function with the capture
+  transport in place, flushes every bucket and returns the points that were
+  sent, decoded by the new `DdDataStreams.Testing.decode_payload/1` into
+  plain maps with `edge_tags`, `hash`, `parent_hash` and the latency fields.
+  A test asserts on the pathway instead of on gunzipped MsgPack bytes.
 
 ### Changed
 

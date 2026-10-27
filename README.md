@@ -645,7 +645,8 @@ started, detaches the handlers it attached and restores the application
 environment to what it was before the call; anything already running or
 already attached when it was called is left alone. It attaches handlers and
 starts a process the whole VM shares, so a test that uses it runs with
-`async: false`.
+`async: false`. To assert on what such a test flushed, `capture/1`, described
+next, runs a function and returns the points.
 
 ### Integration tests: keep it on and capture the flushes
 
@@ -663,43 +664,49 @@ payload the agent would have received (`:zlib.gunzip/1` reads it back). The
 aggregator is started when the application boots, reading this transport like
 any other.
 
-A test attaches a handler under its own id, so it receives only what is
-flushed while it runs, and calls `DdDataStreams.Aggregator.flush(:all)` to
+`DdDataStreams.Testing.capture/1` does the rest: it attaches a handler under
+its own id, runs a function, calls `DdDataStreams.Aggregator.flush(:all)` to
 send every bucket at once - including the one still being filled, which
-`flush/0` keeps until its ten-second window completes. A checkpoint recorded a
-moment ago is therefore assertable immediately:
+`flush/0` keeps until its ten-second window completes - detaches again and
+returns the points of everything that was flushed, decoded by
+`DdDataStreams.Testing.decode_payload/1`. A checkpoint recorded a moment ago
+is therefore assertable immediately, on `hash` and `parent_hash` instead of
+on bytes:
 
 ```elixir
 # In an async: false test: it observes the shared aggregator's flushes.
 defmodule MyApp.OrdersTest do
   use ExUnit.Case, async: false
 
-  setup do
-    test = self()
-    handler = "capture-#{System.unique_integer([:positive])}"
+  test "the consume checkpoint links to the produce checkpoint" do
+    points =
+      DdDataStreams.Testing.capture(fn ->
+        [{_key, value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
 
-    :telemetry.attach(
-      handler,
-      [:dd_data_streams, :transport, :captured],
-      fn _event, _measurements, metadata, _config -> send(test, {:captured, metadata}) end,
-      nil
-    )
+        DdDataStreams.consume(%{
+          data: Jason.encode!(order),
+          metadata: %{
+            subscription: "projects/demo/subscriptions/orders-sub",
+            attributes: %{DdDataStreams.Config.header() => value}
+          }
+        })
+      end)
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    produce = Enum.find(points, &("topic:orders-out" in &1.edge_tags))
+    consume = Enum.find(points, &("subscription:orders-sub" in &1.edge_tags))
 
-    :ok
-  end
-
-  test "the produce checkpoint reaches the aggregator" do
-    [{_key, _value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
-
-    :ok = DdDataStreams.Aggregator.flush(:all)
-
-    assert_receive {:captured, %{body: body}}
-    assert :zlib.gunzip(body) =~ "topic:orders-out"
+    assert consume.parent_hash == produce.hash
   end
 end
 ```
+
+Each point is a map with `:edge_tags`, `:hash`, `:parent_hash`,
+`:pathway_latency`, `:edge_latency`, `:payload_size` and `:timestamp_type`;
+the three distributions stay binaries, exactly as they went on the wire.
+`decode_payload/1` is the decoder under it: it takes the gzip-compressed
+MsgPack body from any handler on the captured event and returns the whole
+payload as a plain map, so a test that wants the service or the bucket starts
+as well can decode a body it captured itself.
 
 A test that exercises the Broadway handlers ends with `DdDataStreams.detach/0`,
 which removes the handlers `attach/0` installed and returns `:ok` whether or

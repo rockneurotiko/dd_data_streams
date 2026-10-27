@@ -6,6 +6,7 @@ defmodule DdDataStreams.PayloadTest do
   alias DdDataStreams.Config
   alias DdDataStreams.Payload
   alias DdDataStreams.Sketch
+  alias DdDataStreams.Testing
 
   @consume_tags ["direction:in", "subscription:orders-sub", "type:google-pubsub"]
   @produce_tags ["direction:out", "topic:orders", "type:google-pubsub"]
@@ -229,6 +230,91 @@ defmodule DdDataStreams.PayloadTest do
 
     assert %Payload{stats: [^first, ^second]} =
              Payload.new() |> Payload.add_bucket(first) |> Payload.add_bucket(second)
+  end
+
+  # The decoder the testing API hands a test reads the same bytes these
+  # fixtures pin, so decoding them is the round trip back to the fields the
+  # encoder was given.
+  describe "decode_payload/1" do
+    test "reads the hand-pinned current fixture back field for field" do
+      decoded = @fixture_current |> hex() |> :zlib.gzip() |> Testing.decode_payload()
+
+      assert decoded.env == "prod"
+      assert decoded.service == "checkout"
+      assert decoded.version == "1.2.3"
+      assert decoded.lang == "elixir"
+      assert decoded.tracer_version == "0.1.0"
+      assert decoded.process_tags == []
+      assert decoded.product_mask == 3
+
+      assert [bucket] = decoded.stats
+      assert bucket.start == 1_700_000_000_000_000_000
+      assert bucket.duration == 10_000_000_000
+      assert bucket.backlogs == []
+      assert bucket.transactions == ""
+      assert bucket.transaction_checkpoint_ids == ""
+
+      assert [point] = bucket.stats
+      assert point.edge_tags == @consume_tags
+      assert point.hash == @hash
+      assert point.parent_hash == @parent_hash
+      assert point.timestamp_type == "current"
+      assert point.pathway_latency == sketch(0.25)
+      assert point.edge_latency == sketch(0.125)
+      assert point.payload_size == sketch(1234)
+    end
+
+    test "reads the hand-pinned origin fixture back" do
+      decoded = @fixture_origin |> hex() |> :zlib.gzip() |> Testing.decode_payload()
+
+      assert [bucket] = decoded.stats
+      assert bucket.start == 1_699_999_990_000_000_000
+
+      assert [point] = bucket.stats
+      assert point.edge_tags == @produce_tags
+      assert point.hash == @parent_hash
+      assert point.parent_hash == 0
+      assert point.timestamp_type == "origin"
+      assert point.pathway_latency == sketch(0.5)
+    end
+
+    test "every integer width and string form reads back as what it was written from" do
+      decoded = @widths_payload |> hex() |> :zlib.gzip() |> Testing.decode_payload()
+
+      assert decoded.env == String.duplicate("e", 32)
+      assert decoded.service == "checkout"
+      assert decoded.version == "1.2.3"
+
+      assert [current, origin] = decoded.stats
+
+      assert Enum.map(current.stats, & &1.hash) ==
+               [127, 128, 65_535, 65_536, 4_294_967_296]
+
+      assert [origin_point] = origin.stats
+      assert origin_point.edge_tags == ["direction:" <> String.duplicate("e", 32)]
+      assert origin_point.hash == @hash
+      assert origin_point.pathway_latency == sketch(0.25)
+    end
+
+    test "an empty payload decodes to every top-level key and no points" do
+      decoded = @empty_payload |> hex() |> :zlib.gzip() |> Testing.decode_payload()
+
+      assert decoded.env == ""
+      assert decoded.service == ""
+      assert decoded.stats == []
+      assert decoded.process_tags == []
+      assert decoded.product_mask == 3
+    end
+
+    test "a payload this library did not write says so instead of decoding half" do
+      assert_raise ArgumentError, ~r/unsupported MsgPack byte/, fn ->
+        Testing.decode_payload(:zlib.gzip(<<0xC0, 0xC0>>))
+      end
+
+      assert_raise ArgumentError, ~r/ends early/, fn ->
+        Testing.decode_payload(:zlib.gzip(<<0x82>>))
+      end
+    end
   end
 
   test "new/0 takes the payload identity from the environment" do
