@@ -594,7 +594,9 @@ library is disabled, so these calls need no guard at the call site.
 ## Testing your pipeline
 
 What a test suite should do depends on what it is testing: the pipeline's own
-code, or the library's effect on it. Both recipes start in `config/test.exs`.
+code, or the library's effect on it. Two of the recipes start in
+`config/test.exs` and apply to a whole suite; a test can also flip the flag
+itself, without touching the boot configuration.
 
 ### Unit tests: turn the library off
 
@@ -609,6 +611,41 @@ and no aggregator is started when the application boots. The pipeline code
 under test makes the same calls and takes the same branches as in production,
 but touches nothing global, so every test can be `async: true`: there is no
 handler id and no aggregator process for two tests to fight over.
+
+### Enabling the library for one test
+
+`DdDataStreams.Testing.enable!/1` flips the library on for one test and hands
+back the function that flips it back, so a suite that runs mostly disabled can
+still hold a few tests that record. Nothing restarts: the application that
+booted with the library off stays as it is.
+
+```elixir
+defmodule MyApp.OrdersTest do
+  use ExUnit.Case, async: false
+
+  setup do
+    on_exit(DdDataStreams.Testing.enable!(transport: DdDataStreams.Transport.Capture))
+    :ok
+  end
+
+  test "the produce checkpoint reaches the aggregator" do
+    [{_key, value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
+    assert is_binary(value)
+
+    assert DdDataStreams.status().aggregator_running
+    assert :ok = DdDataStreams.Aggregator.flush(:all)
+  end
+end
+```
+
+`enable!/1` sets `enabled: true`, accepts `transport:`, `service:` and `env:`,
+attaches the handlers `attach/0` installs, and starts the aggregator when it is
+not already running. The cleanup it returns stops the aggregator the call
+started, detaches the handlers it attached and restores the application
+environment to what it was before the call; anything already running or
+already attached when it was called is left alone. It attaches handlers and
+starts a process the whole VM shares, so a test that uses it runs with
+`async: false`.
 
 ### Integration tests: keep it on and capture the flushes
 

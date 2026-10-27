@@ -33,11 +33,13 @@ defmodule DdDataStreams.Config do
   The aggregator is started by `DdDataStreams.Application` from `enabled?/0`
   when the application starts and keeps that answer: turning the flag on
   afterwards installs handlers that record checkpoints into an aggregator that
-  is not running, and `DdDataStreams.Aggregator.add/1` drops every one in
-  silence; turning it off afterwards stops header injection and further handler
-  installation, but handlers installed earlier stay attached and keep recording
-  into the aggregator that is still running. Restart the application to change
-  whether the aggregator runs.
+  is not running, and `DdDataStreams.Aggregator.add/1` drops every one - the
+  first drop in each process is logged at warning level; turning it off
+  afterwards stops header injection and further handler installation, but
+  handlers installed earlier stay attached and keep recording into the
+  aggregator that is still running. Restart the application to change whether
+  the aggregator runs, or let `DdDataStreams.Testing.enable!/1` flip the flag
+  around a single test and start the aggregator for that test.
 
   An application that does not depend on the optional Req brings no default
   transport: the aggregator starts with none, the start logs an error naming

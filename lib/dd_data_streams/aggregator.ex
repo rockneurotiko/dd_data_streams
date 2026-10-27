@@ -44,6 +44,8 @@ defmodule DdDataStreams.Aggregator do
 
   use GenServer
 
+  require Logger
+
   alias DdDataStreams.Config
   alias DdDataStreams.Pathway
   alias DdDataStreams.Payload
@@ -72,6 +74,9 @@ defmodule DdDataStreams.Aggregator do
   @stop_event [:dd_data_streams, :flush, :stop]
   @invalid_event [:dd_data_streams, :checkpoint, :invalid]
   @skip_event [:dd_data_streams, :checkpoint, :skip]
+  # Keyed by module and message, so the process that is told once does not say
+  # it again for the rest of its life.
+  @dropped_key {__MODULE__, :no_aggregator_warned}
 
   @doc """
   Starts the aggregator under its registered name.
@@ -90,7 +95,10 @@ defmodule DdDataStreams.Aggregator do
   Takes the map `DdDataStreams.Pathway.set_checkpoint/3` returns, with an
   optional `:payload_size` in bytes. Does nothing when the aggregator is not
   running, which is the case while the library is disabled; that skip is
-  reported in `[:dd_data_streams, :checkpoint, :skip]` telemetry.
+  reported in `[:dd_data_streams, :checkpoint, :skip]` telemetry. While the
+  library is enabled such a drop is a misconfiguration - the flag was flipped
+  after the application booted - so the first one in each process is also
+  logged at warning level instead of vanishing silently.
   """
   @spec add(Pathway.checkpoint()) :: :ok
   def add(checkpoint) when is_map(checkpoint) do
@@ -101,11 +109,31 @@ defmodule DdDataStreams.Aggregator do
           extractors: nil
         })
 
+        warn_if_enabled()
+
         :ok
 
       pid ->
         GenServer.cast(pid, {:add, checkpoint})
     end
+  end
+
+  # A drop while the library is enabled means the aggregator is not where the
+  # recording expects it, and a silent one is how that goes unnoticed. Once
+  # per process, not once per call: a Broadway processor records every message
+  # it handles, and one line per message would bury the log.
+  defp warn_if_enabled do
+    if Config.enabled?() and not Process.get(@dropped_key, false) do
+      Process.put(@dropped_key, true)
+
+      Logger.warning(
+        "a checkpoint was dropped: data streams monitoring is enabled but no " <>
+          "aggregator is running; in tests call DdDataStreams.Testing.enable!/1, " <>
+          "otherwise set :enabled before the application boots"
+      )
+    end
+
+    :ok
   end
 
   @doc """

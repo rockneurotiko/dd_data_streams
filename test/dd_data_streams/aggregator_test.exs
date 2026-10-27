@@ -1,6 +1,8 @@
 defmodule DdDataStreams.AggregatorTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   use Mimic
 
   alias DdDataStreams.Aggregator
@@ -286,6 +288,28 @@ defmodule DdDataStreams.AggregatorTest do
 
     assert_receive {:checkpoint_skip, %{count: 1},
                     %{reason: :aggregator_not_running, extractors: nil}}
+  end
+
+  # A drop while the library is enabled is a misconfiguration, so it is
+  # logged - but once per process, not once per checkpoint: a processor
+  # records every message it handles and one line per message would bury the
+  # log.
+  test "a checkpoint dropped while enabled warns once per process, not per call" do
+    Application.put_env(:dd_data_streams, :enabled, false)
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :enabled) end)
+
+    disabled = capture_log(fn -> Aggregator.add(@checkpoint) end)
+    refute disabled =~ "no aggregator is running"
+
+    Application.put_env(:dd_data_streams, :enabled, true)
+
+    enabled =
+      capture_log(fn ->
+        Aggregator.add(@checkpoint)
+        Aggregator.add(@checkpoint)
+      end)
+
+    assert length(String.split(enabled, "no aggregator is running")) - 1 == 1
   end
 
   test "a checkpoint within clock skew is kept and flushed on shutdown" do

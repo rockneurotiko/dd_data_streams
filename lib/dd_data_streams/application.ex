@@ -20,7 +20,9 @@ defmodule DdDataStreams.Application do
   Whether it runs at all is decided once, when the application starts, from
   `DdDataStreams.Config.enabled?/0`, which is on unless it is turned off.
   Changing the flag while the application is running neither starts nor stops
-  the aggregator: restart the application to apply it. An idle aggregator sends
+  the aggregator: restart the application to apply it, or in a test call
+  `DdDataStreams.Testing.enable!/1`, which starts the aggregator for the
+  duration of the test and stops it again. An idle aggregator sends
   nothing, so a pipeline that has not attached costs one process and no
   requests.
 
