@@ -10,29 +10,29 @@ Pub/Sub or network dependency, and `mix compile`, `mix test`, `mix format` and
 
 ## What each piece proves
 
-- `run.exs` — a real Broadway pipeline on the client's pull producer:
+- `run.exs` - a real Broadway pipeline on the client's pull producer:
   `DdDataStreams.attach()` installs the consumption handlers, which record one
   checkpoint per message with the broker's receive time and leave the
   checkpointed pathway in the process context, and `produce/3` records the
   produce checkpoint on that pathway and returns the `dd-pathway-ctx-base64`
   pair added to a message published to a second topic. The capture transport writes the flushed
   body to disk instead of posting it, so the run is observable without an agent.
-  At the end it *checks* what happened — the context pathway is the consume
+  At the end it *checks* what happened - the context pathway is the consume
   checkpoint chained onto the inbound hash, the produce header chains onto that
   consume checkpoint, both replies reach the broker with the attribute, nothing
-  failed to flush, and the decoded payload carries both hashes — and exits
+  failed to flush, and the decoded payload carries both hashes - and exits
   non-zero when any of that is missing. Printing is for the reader; the exit
   status is what CI uses.
-- `lib/e2e/capture.ex` — the transport the script installs before the
+- `lib/e2e/capture.ex` - the transport the script installs before the
   application starts. It saves the exact bytes and headers the agent would have
   received.
-- `decoder/` — reads a captured body with the reference payload schema
+- `decoder/` - reads a captured body with the reference payload schema
   (MsgPack outer payload, DDSketch protobuf distributions) and prints the
   service, environment, language and every point with its edge tags, hash,
   parent hash, timestamp family and sample counts. This is what proves the wire
   shape and that a consume checkpoint chains onto the upstream hash and a
   produce checkpoint chains onto the consume hash.
-- `stub_agent.exs` — an HTTP stub that answers `202 Accepted` to any request. It
+- `stub_agent.exs` - an HTTP stub that answers `202 Accepted` to any request. It
   lets the library's agent acceptance test run on a machine with no Datadog
   Agent. It accepts any body and validates nothing.
 
@@ -152,7 +152,7 @@ Expected:
 service: checkout
 env: prod
 lang: elixir
-tracer_version: 0.1.0
+tracer_version: 0.2.0
 version:
 product_mask: 2
 buckets: 3

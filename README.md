@@ -70,7 +70,7 @@ Add `:dd_data_streams` to your dependencies:
 ```elixir
 def deps do
   [
-    {:dd_data_streams, "~> 0.1.0"}
+    {:dd_data_streams, "~> 0.2.0"}
   ]
 end
 ```
@@ -712,17 +712,38 @@ A test that exercises the Broadway handlers ends with `DdDataStreams.detach/0`,
 which removes the handlers `attach/0` installed and returns `:ok` whether or
 not anything was attached, so `on_exit` can call it unconditionally.
 
-### The handler id is fixed
+### What makes these tests async: false
 
-`attach/0` installs its handlers under one VM-global telemetry id,
-`:dd_data_streams`, and `detach/0` removes that one id for the whole VM. Two
-async tests that each attach and detach would therefore race: one test's
-cleanup removes the handlers the other is still recording with. Tests that
-call `attach/0` or `detach/0` - anything exercising the Broadway path - run
-with `async: false`. Tests that never attach are unaffected: every unit test
-with the library disabled, and any test that calls `consume/1`, `produce/3`
-or `checkpoint/1` directly, never touches the id. The capture handler above
-uses a per-test id of its own, so it never collides either.
+Three things in this library belong to the whole VM, so a test that touches
+any of them runs with `async: false`:
+
+* The handler id. `attach/0` installs its handlers under one VM-global
+  telemetry id, `:dd_data_streams`, and `detach/0` removes that one id for
+  the whole VM. Two async tests that each attach and detach would therefore
+  race: one test's cleanup removes the handlers the other is still recording
+  with. Tests that call `attach/0` or `detach/0` - anything exercising the
+  Broadway path - are affected. Tests that never attach are not: every unit
+  test with the library disabled, and any test that calls `consume/1`,
+  `produce/3` or `checkpoint/1` directly, never touches the id.
+* The aggregator. There is one registered process, and `flush(:all)` sends
+  everything it holds, so a test that flushes while another test is recording
+  sends the other test's buckets too. `capture/1` attaches its handler under
+  an id of its own, unique per call, so its captures never collide with
+  another test's, but what it flushes is still the shared aggregator.
+* The application environment. `enable!/1` writes `:enabled`, `:transport`,
+  `:service` and `:env` and its cleanup restores them; two tests doing that
+  at once would restore each other's values.
+
+Per-process or per-pipeline filtering would not lift the last two. A
+telemetry handler runs in the Broadway stage process that emitted the event,
+so a process-scoped opt-in could decide per stage whether to record, but the
+aggregator those checkpoints are handed to and the configuration they are
+read from are still one per VM, and one test's flush would still send another
+test's points. Making these tests async would mean an aggregator per test and
+configuration scoped to the test: a redesign of how the library is started
+and configured, not a change to the handlers. So the limit stays: tests that
+record with the library on run with `async: false`, and the unit-test recipe
+at the top of this section, the library disabled, is the async one.
 
 ## Reference
 
@@ -779,7 +800,7 @@ native time units); the consume edge then reports publish-to-consume latency
 instead of zero. These starts apply only to a message that starts a pathway: a
 message carrying a pathway header keeps the start its producer wrote. A start is
 only believed inside the window from 2000-01-01 to a minute ahead of this node's
-clock — the same window the propagator applies to starts read from a header —
+clock - the same window the propagator applies to starts read from a header -
 and an out-of-window value falls back to the checkpoint time.
 
 A message that carried no pathway and no such publish time starts a new one at

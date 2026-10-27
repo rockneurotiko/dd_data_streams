@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0
 
 ### Added
 
@@ -33,3 +33,10 @@
 - `DdDataStreams.Transport.Req.post/3` never raises: an exception from Req or
   from building the request comes back as `{:error, exception}`, so a transport
   bug cannot crash the aggregator and take its buckets with it.
+
+### Docs
+
+- The testing section of the README documents the testing API and spells out
+  why a test that records with the library on runs with `async: false`: the
+  handler id, the aggregator and the application environment are shared by
+  the whole VM, and per-process filtering would not change the last two.
