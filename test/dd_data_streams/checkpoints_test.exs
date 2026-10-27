@@ -224,6 +224,26 @@ defmodule DdDataStreams.CheckpointsTest do
     assert checkpoint.payload_size == 3
   end
 
+  test "a checkpoint carries the service it is reported under" do
+    {_pathway, configured} = Checkpoints.produce(@produce_tags, Pathway.new(%{}), 3)
+    assert configured.service == @service
+
+    {_pathway, named} =
+      Checkpoints.produce(@produce_tags, Pathway.new(%{}), 3, service: "orders-eu")
+
+    assert named.service == "orders-eu"
+
+    assert named.hash ==
+             Pathway.pathway_hash(Pathway.node_hash("orders-eu", @env, "", @produce_tags), 0)
+
+    received_at = native(1_700_000_000_000)
+
+    {_pathway, consumed} =
+      Checkpoints.consume(pubsub_message(%{}), @consume_tags, received_at, service: "orders-eu")
+
+    assert consumed.service == "orders-eu"
+  end
+
   test "two produces from one consumed pathway share one produce node" do
     header = reference_header()
     {consumed, consume_checkpoint} = consume_reference(header)

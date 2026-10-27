@@ -200,11 +200,13 @@ defmodule DdDataStreams.Aggregator do
          true <- is_list(tags),
          true <- present?(checkpoint, :hash),
          true <- present?(checkpoint, :parent_hash),
+         {:ok, service} <- service(Map.get(checkpoint, :service)),
          {:ok, pathway_latency} <- quantity(Map.get(checkpoint, :pathway_latency)),
          {:ok, edge_latency} <- quantity(Map.get(checkpoint, :edge_latency)),
          {:ok, payload_size} <- quantity(Map.get(checkpoint, :payload_size)) do
       {:ok,
        Map.merge(checkpoint, %{
+         service: service,
          tags: Enum.filter(tags, &is_binary/1),
          pathway_latency: pathway_latency,
          edge_latency: edge_latency,
@@ -216,6 +218,18 @@ defmodule DdDataStreams.Aggregator do
   end
 
   defp normalise(_checkpoint), do: :error
+
+  # A checkpoint written by an older version of this library, or by hand,
+  # carries no service and is reported under the configured one, as every
+  # checkpoint used to be. A blank name counts as no name.
+  defp service(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:ok, Config.service()}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp service(_value), do: {:ok, Config.service()}
 
   defp present?(checkpoint, key), do: not is_nil(Map.get(checkpoint, key))
 
@@ -257,7 +271,7 @@ defmodule DdDataStreams.Aggregator do
     pathway_latency = Map.get(checkpoint, :pathway_latency, 0)
     edge_latency = Map.get(checkpoint, :edge_latency, 0)
     payload_size = Map.get(checkpoint, :payload_size, 0)
-    service = Config.service()
+    service = checkpoint.service
 
     buckets
     |> add_point(

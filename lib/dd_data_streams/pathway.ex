@@ -16,6 +16,12 @@ defmodule DdDataStreams.Pathway do
   message, such as `partition`, are reported but never hashed, because hashing
   them would split one node into a node per partition and stop the downstream
   produce edges from joining up.
+
+  `tags` are the edge tags of the node `hash` identifies, so the pathway a
+  consume left behind carries the consume edge's tags and a produce in that
+  stage can read them. They stay in the VM: `DdDataStreams.Propagator` writes
+  the hash and the two starts on the wire, not the tags, so a consumer cannot
+  read its producer's tags from the header it receives.
   """
 
   alias DdDataStreams.Tags
@@ -29,6 +35,7 @@ defmodule DdDataStreams.Pathway do
           hash: non_neg_integer(),
           pathway_start: non_neg_integer(),
           edge_start: non_neg_integer(),
+          tags: [String.t()],
           extractor: module() | nil,
           producer_info: DdDataStreams.Extractor.producer_info() | nil
         }
@@ -39,7 +46,8 @@ defmodule DdDataStreams.Pathway do
   `payload_size` is the byte size of the message the checkpoint was recorded
   for; `DdDataStreams.Checkpoints.consume/3` and `produce/3` add it for
   aggregation, while `set_checkpoint/3` leaves it out and the aggregator
-  treats an absent value as zero.
+  treats an absent value as zero. `service` is added the same way, and is the
+  service the checkpoint is reported under.
   """
   @type checkpoint :: %{
           required(:hash) => non_neg_integer(),
@@ -48,12 +56,14 @@ defmodule DdDataStreams.Pathway do
           required(:timestamp) => integer(),
           required(:pathway_latency) => non_neg_integer(),
           required(:edge_latency) => non_neg_integer(),
-          optional(:payload_size) => non_neg_integer()
+          optional(:payload_size) => non_neg_integer(),
+          optional(:service) => String.t()
         }
 
   defstruct hash: 0,
             pathway_start: 0,
             edge_start: 0,
+            tags: [],
             extractor: nil,
             producer_info: nil,
             previous_direction: nil,
@@ -77,6 +87,7 @@ defmodule DdDataStreams.Pathway do
       hash: Map.get(fields, :hash, 0),
       pathway_start: Map.get(fields, :pathway_start, 0),
       edge_start: Map.get(fields, :edge_start, 0),
+      tags: Map.get(fields, :tags, []),
       extractor: Map.get(fields, :extractor, nil),
       producer_info: Map.get(fields, :producer_info, nil),
       previous_direction: Map.get(fields, :previous_direction, nil),
@@ -135,6 +146,10 @@ defmodule DdDataStreams.Pathway do
     * `:now` - checkpoint time in milliseconds, defaults to the current time
     * `:service`, `:env`, `:primary_tag` - identity of the node; see `node_hash/4`
     * `:pathway_start`, `:edge_start` - override the respective start time
+
+  The returned pathway carries `tags` as the tags of the node it reached, so a
+  produce in the stage that consumed a message reads the consume edge's tags
+  from the pathway in `DdDataStreams.Context`.
   """
   @spec set_checkpoint(t(), [String.t()], keyword()) :: {t(), checkpoint()}
   def set_checkpoint(%__MODULE__{} = pathway, tags, opts \\ []) do
@@ -207,7 +222,7 @@ defmodule DdDataStreams.Pathway do
       edge_latency: max(now - pathway.edge_start, 0)
     }
 
-    {%{pathway | hash: hash, edge_start: now}, checkpoint}
+    {%{pathway | hash: hash, edge_start: now, tags: tags}, checkpoint}
   end
 
   defp now_ms, do: System.system_time(:millisecond)

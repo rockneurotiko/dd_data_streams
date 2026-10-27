@@ -61,6 +61,32 @@ defmodule DdDataStreams.Tags do
   def encode({key, value}), do: "#{key}:#{value}"
 
   @doc """
+  Returns the value of the first tag with `key`, or `nil` when none has it.
+
+      iex> tags = ["direction:in", "topic:orders:eu", "type:kafka"]
+      iex> DdDataStreams.Tags.get(tags, "topic")
+      "orders:eu"
+      iex> DdDataStreams.Tags.get(tags, "subscription")
+      nil
+
+  A tag is split at its first colon, so the value may contain colons. This is
+  how a `DdDataStreams.ServiceName` reads the edge from the tags it is given, or
+  from the tags of the pathway in `DdDataStreams.Context`:
+
+      iex> DdDataStreams.Tags.get(["direction:out", "topic:orders"], "direction")
+      "out"
+  """
+  @spec get([String.t()], String.t()) :: String.t() | nil
+  def get(tags, key) do
+    Enum.find_value(tags, fn tag ->
+      case parse(tag) do
+        {:ok, {^key, value}} -> value
+        _ -> nil
+      end
+    end)
+  end
+
+  @doc """
   Keeps the tags that belong to a tier, preserving their order.
 
   `:hash` keeps only the tags that identify a node. `:aggregation` keeps the

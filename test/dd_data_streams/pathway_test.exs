@@ -96,6 +96,7 @@ defmodule DdDataStreams.PathwayTest do
              hash: @consume_pathway_hash,
              pathway_start: 1_000,
              edge_start: 1_000,
+             tags: @consume_tags,
              previous_direction: "direction:in",
              closest_opposite_direction_hash: 0,
              closest_opposite_direction_edge_start: 1_000
@@ -130,6 +131,7 @@ defmodule DdDataStreams.PathwayTest do
              hash: @chained_produce_hash,
              pathway_start: 1_000,
              edge_start: 1_500,
+             tags: @produce_tags,
              previous_direction: "direction:out",
              closest_opposite_direction_hash: @consume_pathway_hash,
              closest_opposite_direction_edge_start: 1_500

@@ -17,6 +17,19 @@
   `set_private/0`, `set_global/1`, `set_from_context/1` and the assert helpers
   `assert_produced/1`, `assert_consumed/1` and `assert_chained/2` are the
   public owner-scoped API. `use DdDataStreams.Testing` installs the mode setup.
+- `DdDataStreams.ServiceName`, the behaviour that names the service per
+  checkpoint. Configured with `service_name:` it is asked for every consume,
+  produce and checkpoint, so one pipeline can report several services; the
+  `:service` option on `produce/3` and `produce_batch/3` overrides it for one
+  call, and the configured `service` remains the fallback.
+- The checkpoint map carries `:service`, and the aggregator groups buckets and
+  payloads by it instead of by the application-wide setting. `Checkpoints.consume/4`
+  and `produce/4` take the `:service` option that sets it.
+- A pathway carries `tags`, the edge tags of the node it reached, so a produce
+  in the stage that consumed a message can read the consumed edge from the
+  pathway in `DdDataStreams.Context`. `DdDataStreams.Tags.get/2` returns one
+  tag's value. The tags stay in the VM: the propagated header does not carry
+  them. `ServiceName`'s context gained the `:pathway` it continues.
 
 ### Changed
 

@@ -24,6 +24,8 @@ defmodule DdDataStreams.Config do
       answer.
     * `service/0`, `env/0`, `primary_tag/0` - per checkpoint; `service/0` and
       `env/0` again when building the payload.
+    * `service_name/0` - per checkpoint, when the caller passed no `:service`
+      option of its own.
     * `version/0` - when building the payload, on flush.
     * `header/0` - on every produce and consume call.
     * `extractors/0` (via `DdDataStreams.extractors/0`) - on attach, on every
@@ -75,6 +77,21 @@ defmodule DdDataStreams.Config do
   """
   @spec service() :: String.t()
   def service, do: setting(:service, System.get_env("DD_SERVICE")) || @default_service
+
+  @doc """
+  The module that names the service per checkpoint: `config :dd_data_streams,
+  service_name:` when set, `nil` otherwise and every checkpoint is reported
+  under `service/0`.
+
+  The module implements `DdDataStreams.ServiceName` and is asked once per
+  checkpoint, so a pipeline can report a message under a service of its own
+  instead of the one configured for the application. Read per checkpoint, so a
+  runtime change applies to the next one. `DdDataStreams.attach/0` validates it,
+  so a module that cannot be called fails at start up rather than on the first
+  message.
+  """
+  @spec service_name() :: module() | nil
+  def service_name, do: Application.get_env(:dd_data_streams, :service_name)
 
   @doc """
   The deployment environment: `config :dd_data_streams, env:` when set, `DD_ENV`

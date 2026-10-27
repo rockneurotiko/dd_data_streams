@@ -163,7 +163,7 @@ already handed to the aggregator are still flushed.
 `DdDataStreams.status/0` answers "is it recording?" from the local VM - no
 Datadog Agent needed - with the enabled flag, whether the handlers are attached,
 whether the aggregator is running, and the effective transport, agent URL,
-header, service, environment and extractors.
+header, service, environment, service namer and extractors.
 
 ### 4. Produce
 
@@ -857,6 +857,71 @@ that reach it before the flush.
 A produce measured for one topic is one node even when the messages are spread
 over partitions, which is what lets downstream produce edges join up.
 
+### Service name
+
+`service` (or `DD_SERVICE`) names one service for the whole application. A
+pipeline that handles messages for several services - one per tenant, one per
+Broadway pipeline, one per topic - names it per checkpoint instead, by
+configuring a module that implements `DdDataStreams.ServiceName`:
+
+```elixir
+config :dd_data_streams, service_name: MyApp.ServiceNames
+
+defmodule MyApp.ServiceNames do
+  @behaviour DdDataStreams.ServiceName
+
+  @impl true
+  def call(%{direction: :in, metadata: metadata}) do
+    case metadata do
+      %{subscription: subscription} -> "my_service." <> short_id(subscription)
+      _ -> nil
+    end
+  end
+
+  def call(%{direction: :out, topic: topic}), do: "my_service." <> short_id(topic)
+
+  defp short_id(resource), do: resource |> String.split("/") |> List.last()
+end
+```
+
+It is asked once per checkpoint: the `:in` direction gets the message's broker
+metadata and the `:out` direction the publish topic and the options passed to
+`produce/3`, and both get the edge tags and the producer info. A `:service`
+option on `produce/3` or `produce_batch/3` wins over the module; a module that
+returns `nil`, `""` or anything else that is not a string names no service and
+`service` applies. `checkpoint/1,2` reports `service`, since it has neither a
+message nor a topic to name one from.
+
+A produce can also name itself after what it answers. The context carries
+`pathway`, and on the `:out` direction its `tags` are the tags of the consumed
+edge, so the parent topic is one `DdDataStreams.Tags.get/2` away:
+
+```elixir
+def call(%{direction: :out, pathway: %DdDataStreams.Pathway{} = pathway}) do
+  case DdDataStreams.Tags.get(pathway.tags, "topic") do
+    nil -> nil
+    topic -> "my_service." <> topic
+  end
+end
+```
+
+`pathway` is `nil` for `:in`, and for a produce that continues nothing: the
+pathway header on the message carries the hashes and the two starts, not the
+tags, so a consumer cannot read its producer's topic from what it receives.
+
+Three things to know before using it:
+
+* The service is hashed into the node's identity and it keys the aggregator's
+  buckets: **one MsgPack payload and one agent request go out per service per
+  ten-second flush**, so name a small, known set of logical services. A name
+  derived from an order or a tenant id multiplies services and nodes instead
+  of describing them.
+* The module runs on the recording path, once per checkpoint per direction.
+  Keep it a decision, not a lookup: no database, no HTTP call.
+* The outgoing payload is not given to it, because `produce/3` never inspects
+  the payload and a name derived from message content is the cardinality trap
+  above. Use the topic, the tags, the metadata or the pipeline name.
+
 ### Latency
 
 Checkpoint times are in native time units: the consume checkpoint's
@@ -1074,6 +1139,9 @@ config :dd_data_streams,
   agent_port: 8126,
   # Defaults to [DdDataStreams.Extractor.GooglePubSub].
   extractors: [MyApp.KafkaExtractor, DdDataStreams.Extractor.GooglePubSub],
+  # Optional: names the service per checkpoint instead of `service`. See
+  # "Service name" below.
+  service_name: MyApp.ServiceNames,
   # Defaults to DdDataStreams.Transport.Req when Req is available.
   transport: MyApp.AgentTransport,
   # Defaults to DdDataStreams.Backend.Aggregator. Tests can use
@@ -1087,6 +1155,7 @@ When each setting is read:
 |---|---|
 | `enabled` | at attach, produce and consume time, and once when the application starts (for the aggregator) |
 | `service`, `env`, `primary_tag` | per checkpoint; `service` and `env` again when building the payload |
+| `service_name` | per checkpoint, when the caller passed no `:service` option of its own |
 | `version` | when building the payload (on flush) |
 | `header` | on every produce and consume call |
 | `extractors` | on attach, on every consume, and on produce only as a fallback |

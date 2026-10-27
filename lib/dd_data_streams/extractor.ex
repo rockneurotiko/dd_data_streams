@@ -95,6 +95,10 @@ defmodule DdDataStreams.Extractor do
   `group:`, adds them here; the keys in `DdDataStreams.Tags` decide whether they
   take part in the node's identity or only split its statistics.
 
+  Naming the edge is not naming the service: the service a checkpoint is
+  reported under comes from `DdDataStreams.Config.service/0` or a configured
+  `DdDataStreams.ServiceName`, so an extractor stays about one broker.
+
   `c:produce/2` has no message metadata to look at, so it names every edge it
   is asked about. It does receive the `t:producer_info/0` of the message the
   stage is answering - the same one `c:consume/2` gets - so identity kept in
@@ -217,9 +221,9 @@ defmodule DdDataStreams.Extractor do
         routing_key: "orders-eu"
       )
 
-  The library reads `:extractor` and `:payload_size` from the options itself and
-  passes the list through unchanged, so everything else arrives as the host
-  wrote it. Everything else is `c:produce/2`'s contract: the return value, the
+  The library reads `:extractor`, `:payload_size` and `:service` from the options
+  itself and passes the list through unchanged, so everything else arrives as
+  the host wrote it. Everything else is `c:produce/2`'s contract: the return value, the
   tags, and the `t:producer_info/0` argument.
   """
   @callback produce(topic :: String.t(), producer_info :: producer_info(), keyword()) :: tags()

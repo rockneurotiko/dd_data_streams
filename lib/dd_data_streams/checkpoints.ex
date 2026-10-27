@@ -123,20 +123,34 @@ defmodule DdDataStreams.Checkpoints do
   `DdDataStreams.consume/1` builds exactly that for a Broadway pipeline.
 
   Returns the pathway the checkpoint reached and the checkpoint itself, with
-  its `:payload_size` in bytes. Hand the checkpoint to
+  its `:service` and `:payload_size`. Hand the checkpoint to
   `DdDataStreams.Aggregator.add/1`, and the pathway to `produce/3` when this
   stage produces messages, so the produce edge continues the consumed one.
+
+  Options:
+
+    * `:service` - the service to hash into the node and report the checkpoint
+      under. Defaults to `DdDataStreams.Config.service/0`; the Broadway
+      handlers pass what the configured `DdDataStreams.ServiceName` named.
   """
-  @spec consume(message(), [String.t()], integer()) :: {Pathway.t(), Pathway.checkpoint()}
-  def consume(%{data: _} = message, tags, received_at)
-      when is_list(tags) and is_integer(received_at) do
+  @spec consume(message(), [String.t()], integer(), keyword()) ::
+          {Pathway.t(), Pathway.checkpoint()}
+  def consume(message, tags, received_at, opts \\ [])
+
+  def consume(%{data: _} = message, tags, received_at, opts)
+      when is_list(tags) and is_integer(received_at) and is_list(opts) do
+    service = Keyword.get(opts, :service) || Config.service()
     {_field, carrier} = carrier(message)
     pathway = continued(Carrier.fetch(carrier, Config.header()))
 
     {pathway, checkpoint} =
-      Pathway.set_checkpoint(pathway, tags, checkpoint_opts(pathway, message, received_at))
+      Pathway.set_checkpoint(
+        pathway,
+        tags,
+        checkpoint_opts(pathway, message, received_at, service)
+      )
 
-    {pathway, Map.put(checkpoint, :payload_size, payload_size(message))}
+    {pathway, Map.merge(checkpoint, %{service: service, payload_size: payload_size(message)})}
   end
 
   @doc """
@@ -167,30 +181,40 @@ defmodule DdDataStreams.Checkpoints do
   Keep the input pathway for any further produces of the same batch: every
   produce then has the consumed hash as its parent and they share one produce
   node.
+
+  Options:
+
+    * `:service` - the service to hash into the node and report the checkpoint
+      under. Defaults to `DdDataStreams.Config.service/0`; `DdDataStreams.produce/3`
+      passes what the configured `DdDataStreams.ServiceName` named.
   """
-  @spec produce([String.t()], Pathway.t(), non_neg_integer()) ::
+  @spec produce([String.t()], Pathway.t(), non_neg_integer(), keyword()) ::
           {Pathway.t(), Pathway.checkpoint()}
-  def produce(tags, %Pathway{} = pathway, payload_size)
-      when is_list(tags) and is_integer(payload_size) and payload_size >= 0 do
+  def produce(tags, pathway, payload_size, opts \\ [])
+
+  def produce(tags, %Pathway{} = pathway, payload_size, opts)
+      when is_list(tags) and is_integer(payload_size) and payload_size >= 0 and is_list(opts) do
+    service = Keyword.get(opts, :service) || Config.service()
+
     {pathway, checkpoint} =
       Pathway.set_checkpoint(pathway, tags,
-        service: Config.service(),
+        service: service,
         env: Config.env(),
         primary_tag: Config.primary_tag()
       )
 
-    {pathway, Map.put(checkpoint, :payload_size, payload_size)}
+    {pathway, Map.merge(checkpoint, %{service: service, payload_size: payload_size})}
   end
 
   # The checkpoint is always stamped at received_at; the broker's publish time,
   # when the message carries one and its pathway has not started yet, replaces
   # the start the checkpoint would otherwise take, so a message with no header
   # and no publish time behaves exactly as it did before.
-  @spec checkpoint_opts(Pathway.t(), message(), integer()) :: keyword()
-  defp checkpoint_opts(pathway, message, received_at) do
+  @spec checkpoint_opts(Pathway.t(), message(), integer(), String.t()) :: keyword()
+  defp checkpoint_opts(pathway, message, received_at, service) do
     [
       now: System.convert_time_unit(received_at, :native, :millisecond),
-      service: Config.service(),
+      service: service,
       env: Config.env(),
       primary_tag: Config.primary_tag()
     ] ++ first_hop_starts(pathway, message)

@@ -26,6 +26,10 @@ defmodule DdDataStreams do
   broker needs an extractor module of your own; the carriers `Flat` and `Sqs`
   ship as well.
 
+  An extractor names the edge, not the service the checkpoint is reported under:
+  that is `DdDataStreams.Config.service/0`, unless a
+  `DdDataStreams.ServiceName` module is configured, which names it per message.
+
   ## Using it in a Broadway pipeline
 
   A Broadway pipeline reaches the library through telemetry instead of through a
@@ -158,6 +162,7 @@ defmodule DdDataStreams do
   @spec attach() :: :ok
   def attach do
     ensure_extractors!(extractors())
+    ensure_service_name!()
 
     if Config.enabled?() do
       case :telemetry.attach_many(@handler_id, @events, &__MODULE__.handle_event/4, %{}) do
@@ -199,8 +204,8 @@ defmodule DdDataStreams do
     * `:aggregator_running` - whether the process that batches checkpoints and
       posts them is running.
     * `:transport`, `:agent_url`, `:header`, `:service`, `:env`,
-      `:extractors` - the effective values of the same settings the recording
-      itself reads, as of this call.
+      `:service_name`, `:extractors` - the effective values of the same
+      settings the recording itself reads, as of this call.
 
   "Is it recording?" is all three of `:enabled`, `:attached` and
   `:aggregator_running` for the default backend: the flag decides whether new
@@ -217,6 +222,7 @@ defmodule DdDataStreams do
           header: String.t(),
           service: String.t(),
           env: String.t(),
+          service_name: module() | nil,
           extractors: [module()]
         }
   def status do
@@ -229,6 +235,7 @@ defmodule DdDataStreams do
       header: Config.header(),
       service: Config.service(),
       env: Config.env(),
+      service_name: Config.service_name(),
       extractors: extractors()
     }
   end
@@ -343,6 +350,10 @@ defmodule DdDataStreams do
     * `:payload_size` - the size in bytes to report, a non-negative integer.
       Defaults to the size of `data`. The pair this function returns is added to
       it, so pass the size of the message without that pair.
+    * `:service` - the service to report this produce under, overriding the
+      configured `DdDataStreams.ServiceName` and `DdDataStreams.Config.service/0`.
+      A consume in the same stage does not inherit it: each checkpoint asks for
+      its own name.
 
   Any other option is passed to an extractor that implements the optional
   `c:DdDataStreams.Extractor.produce/3`, which is how an edge that needs more
@@ -357,11 +368,14 @@ defmodule DdDataStreams do
     size = payload_size(data, opts)
 
     if Backend.enabled?() do
+      tags = produce_tags(topic, opts)
+
       {pathway, checkpoint} =
         Checkpoints.produce(
-          produce_tags(topic, opts),
+          tags,
           Context.get() || Pathway.new(%{}),
-          size
+          size,
+          service: out_service(tags, topic, opts)
         )
 
       pair = {Config.header(), Propagator.encode_str(pathway)}
@@ -401,7 +415,8 @@ defmodule DdDataStreams do
   needs to be measured differently.
 
   The `:extractor` option is the same as for `produce/3`, as is any option an
-  extractor implementing `c:DdDataStreams.Extractor.produce/3` reads. Call it
+  extractor implementing `c:DdDataStreams.Extractor.produce/3` reads. `:service`
+  names the whole batch, since the batch is one produce node. Call it
   immediately before the batch send, for the same reason as `produce/3`.
   """
   @spec produce_batch(String.t(), Enumerable.t(), keyword()) :: [propagation()]
@@ -605,11 +620,28 @@ defmodule DdDataStreams do
   defp extractor_checkpoint(extractor, data, metadata, producer_info) do
     case edge(extractor, metadata, producer_info) do
       {:ok, tags, parts} ->
+        tags = Enum.filter(tags, &is_binary/1)
+
+        service =
+          service_name(
+            %{
+              direction: :in,
+              tags: tags,
+              metadata: metadata,
+              topic: nil,
+              opts: [],
+              pathway: nil,
+              producer_info: producer_info
+            },
+            nil
+          )
+
         {pathway, checkpoint} =
           Checkpoints.consume(
             Map.put(parts, :data, data),
-            Enum.filter(tags, &is_binary/1),
-            received_at(parts)
+            tags,
+            received_at(parts),
+            service: service
           )
 
         # The extractor and the producer that delivered the message ride on the
@@ -686,14 +718,88 @@ defmodule DdDataStreams do
     end
   end
 
+  # The service a checkpoint is reported under: the option the host passed,
+  # then the configured namer, then the configured service. The namer is host
+  # code in the recording path, so a failure is reported and the checkpoint is
+  # still recorded under the default rather than lost.
+  defp service_name(context, explicit) do
+    explicit || named_service(context) || Config.service()
+  end
+
+  defp named_service(context) do
+    case Config.service_name() do
+      nil ->
+        nil
+
+      module ->
+        try do
+          case module.call(context) do
+            service when is_binary(service) -> present_service(service)
+            _no_service -> nil
+          end
+        rescue
+          error -> service_name_failed(module, error, __STACKTRACE__)
+        catch
+          kind, reason -> service_name_failed(module, {kind, reason}, __STACKTRACE__)
+        end
+    end
+  end
+
+  defp service_name_failed(module, reason, stacktrace) do
+    report("a Data Streams service namer failed", %{
+      service_name: module,
+      reason: reason,
+      stacktrace: stacktrace
+    })
+
+    nil
+  end
+
+  defp out_service(tags, topic, opts) do
+    service_name(
+      %{
+        direction: :out,
+        tags: tags,
+        metadata: nil,
+        topic: topic,
+        opts: opts,
+        pathway: Context.get(),
+        producer_info: Context.get_producer_info()
+      },
+      explicit_service!(opts)
+    )
+  end
+
+  # An explicit option is the host's own word, so a value that could not be a
+  # service name is rejected at the call site instead of hashed into a node.
+  defp explicit_service!(opts) do
+    case Keyword.get(opts, :service) do
+      nil -> nil
+      service when is_binary(service) -> present_service(service)
+      other -> raise ArgumentError, ":service must be a string, got: #{inspect(other)}"
+    end
+  end
+
+  # An unset, empty or blank name counts as no name, as every other configured
+  # string in this library does.
+  defp present_service(service) do
+    case String.trim(service) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
   defp produce_all(_topic, [], _opts), do: []
 
   defp produce_all(topic, datas, opts) do
+    tags = produce_tags(topic, opts)
+
     {pathway, checkpoint} =
       Checkpoints.produce(
-        produce_tags(topic, opts),
+        tags,
         Context.get() || Pathway.new(%{}),
-        0
+        0,
+        service: out_service(tags, topic, opts)
       )
 
     pair = {Config.header(), Propagator.encode_str(pathway)}
@@ -826,6 +932,26 @@ defmodule DdDataStreams do
         raise ArgumentError,
               "#{inspect(other)} is not a list of DdDataStreams.Extractor modules: " <>
                 "set `config :dd_data_streams, extractors: [MyApp.Extractor]`"
+    end
+  end
+
+  # A namer that cannot be called would fail on the first message elsewhere
+  # than at start up, so it is rejected with the other configured modules,
+  # while the library is disabled too.
+  defp ensure_service_name! do
+    case Config.service_name() do
+      nil ->
+        :ok
+
+      module ->
+        if is_atom(module) and Code.ensure_loaded?(module) and
+             function_exported?(module, :call, 1) do
+          :ok
+        else
+          raise ArgumentError,
+                "service_name: #{inspect(module)} is not a DdDataStreams.ServiceName module: " <>
+                  "set `config :dd_data_streams, service_name: MyApp.ServiceNames`"
+        end
     end
   end
 end
