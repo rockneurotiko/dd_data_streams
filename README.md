@@ -913,9 +913,10 @@ Three things to know before using it:
 
 * The service is hashed into the node's identity and it keys the aggregator's
   buckets: **one MsgPack payload and one agent request go out per service per
-  ten-second flush**, so name a small, known set of logical services. A name
-  derived from an order or a tenant id multiplies services and nodes instead
-  of describing them.
+  ten-second flush**, so name a small, known set of logical services. The
+  requests of one flush are posted in parallel, up to `flush_concurrency` at a
+  time, which defaults to 8. A name derived from an order or a tenant id
+  multiplies services and nodes instead of describing them.
 * The module runs on the recording path, once per checkpoint per direction.
   Keep it a decision, not a lookup: no database, no HTTP call.
 * The outgoing payload is not given to it, because `produce/3` never inspects
@@ -1142,6 +1143,8 @@ config :dd_data_streams,
   # Optional: names the service per checkpoint instead of `service`. See
   # "Service name" below.
   service_name: MyApp.ServiceNames,
+  # How many services' payloads one flush posts at once. Defaults to 8.
+  flush_concurrency: 8,
   # Defaults to DdDataStreams.Transport.Req when Req is available.
   transport: MyApp.AgentTransport,
   # Defaults to DdDataStreams.Backend.Aggregator. Tests can use
@@ -1160,6 +1163,7 @@ When each setting is read:
 | `header` | on every produce and consume call |
 | `extractors` | on attach, on every consume, and on produce only as a fallback |
 | `agent_url`, `agent_host`, `agent_port` | on every flush |
+| `flush_concurrency` | on every flush |
 | `transport` | on every flush, and once when the application starts (for the default) |
 | `backend` | on every produce, consume and checkpoint call, and in the Broadway handlers |
 

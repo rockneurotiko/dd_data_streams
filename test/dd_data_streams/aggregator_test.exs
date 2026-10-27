@@ -6,6 +6,7 @@ defmodule DdDataStreams.AggregatorTest do
   use Mimic
 
   alias DdDataStreams.Aggregator
+  alias DdDataStreams.Config
   alias DdDataStreams.Transport
 
   @moduletag :capture_log
@@ -530,5 +531,182 @@ defmodule DdDataStreams.AggregatorTest do
 
     assert_receive {:flush_error, _event, %{count: 1},
                     %{reason: %UndefinedFunctionError{module: Transport}}}
+  end
+
+  # A transport that reports which service it posted and in which process, and
+  # runs the handler the test sets: one that blocks, one that fails, or none.
+  # The post is reported after the handler returns, so a test can tell which
+  # posts finished while another one was still blocked.
+  defmodule RecordingTransport do
+    @behaviour DdDataStreams.Transport
+
+    @impl true
+    def post(_url, _headers, body) do
+      service = DdDataStreams.Testing.decode_payload(body).service
+      handler = Application.get_env(:dd_data_streams, :flush_test_handler)
+
+      result = if is_function(handler, 1), do: handler.(service), else: {:ok, 202}
+
+      send(Application.fetch_env!(:dd_data_streams, :flush_test_target), {:post, service, self()})
+
+      result
+    end
+  end
+
+  # Points the aggregator at RecordingTransport for this test. The transport is
+  # read on every flush, so the application environment is the seam.
+  defp record_posts(handler \\ nil) do
+    Application.put_env(:dd_data_streams, :transport, RecordingTransport)
+    Application.put_env(:dd_data_streams, :flush_test_target, self())
+    if handler, do: Application.put_env(:dd_data_streams, :flush_test_handler, handler)
+
+    on_exit(fn ->
+      for key <- [:transport, :flush_test_target, :flush_test_handler] do
+        Application.delete_env(:dd_data_streams, key)
+      end
+    end)
+  end
+
+  defp received_posts(count) do
+    for _ <- 1..count do
+      assert_receive {:post, service, pid}, 2_000
+      {service, pid}
+    end
+  end
+
+  defp add_services(services) do
+    Enum.each(services, &Aggregator.add(Map.put(@checkpoint, :service, &1)))
+  end
+
+  test "one flush posts every service's payload, in more than one process" do
+    record_posts()
+    start_aggregator()
+    add_services(~w(svc-a svc-b svc-c))
+
+    assert :ok = Aggregator.flush(:all)
+
+    posts = received_posts(3)
+
+    assert posts |> Enum.map(&elem(&1, 0)) |> Enum.sort() == ~w(svc-a svc-b svc-c)
+    assert posts |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() > 1
+  end
+
+  test "a service that blocks does not delay the posts of the others" do
+    test = self()
+
+    Application.put_env(:dd_data_streams, :flush_concurrency, 2)
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :flush_concurrency) end)
+
+    record_posts(fn
+      "svc-c" ->
+        send(test, {:blocked, self()})
+
+        receive do
+          :release -> {:ok, 202}
+        after
+          5_000 -> {:ok, 202}
+        end
+
+      _other ->
+        {:ok, 202}
+    end)
+
+    start_aggregator()
+    add_services(~w(svc-a svc-b svc-c))
+
+    flush = Task.async(fn -> Aggregator.flush(:all) end)
+
+    # Two at a time and three services, so the blocked one is the third: the
+    # other two are posted while it is still waiting.
+    assert %{"svc-a" => _, "svc-b" => _} = Map.new(received_posts(2))
+    assert_receive {:blocked, blocked}, 2_000
+    refute_received {:post, "svc-c", _}
+
+    send(blocked, :release)
+
+    assert :ok = Task.await(flush)
+    assert [{"svc-c", _pid}] = received_posts(1)
+  end
+
+  test "stopping the aggregator still posts every service" do
+    record_posts()
+    pid = start_aggregator()
+    add_services(~w(svc-a svc-b svc-c))
+
+    GenServer.stop(pid)
+
+    posts = received_posts(3)
+    assert posts |> Enum.map(&elem(&1, 0)) |> Enum.sort() == ~w(svc-a svc-b svc-c)
+  end
+
+  test "a service whose post fails is counted and the others are still flushed" do
+    record_posts(fn
+      "svc-b" -> raise "far end"
+      "svc-d" -> {:error, :econnrefused}
+      _other -> {:ok, 202}
+    end)
+
+    start_aggregator()
+    add_services(~w(svc-a svc-b svc-c svc-d))
+
+    assert :ok = Aggregator.flush(:all)
+
+    assert_receive {:flush_error, [:dd_data_streams, :flush, :error], %{count: 1},
+                    %{service: "svc-b", reason: %RuntimeError{message: "far end"}}}
+
+    assert_receive {:flush_error, [:dd_data_streams, :flush, :error], %{count: 1},
+                    %{service: "svc-d", reason: :econnrefused}}
+
+    posts = received_posts(2)
+    assert posts |> Enum.map(&elem(&1, 0)) |> Enum.sort() == ~w(svc-a svc-c)
+  end
+
+  test "flush_concurrency 1 posts one service at a time" do
+    test = self()
+
+    Application.put_env(:dd_data_streams, :flush_concurrency, 1)
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :flush_concurrency) end)
+
+    record_posts(fn _service ->
+      send(test, {:posting, self()})
+
+      receive do
+        :go -> {:ok, 202}
+      after
+        2_000 -> {:ok, 202}
+      end
+    end)
+
+    start_aggregator()
+    add_services(~w(svc-a svc-b svc-c))
+
+    flush = Task.async(fn -> Aggregator.flush(:all) end)
+
+    for _ <- 1..3 do
+      assert_receive {:posting, pid}, 2_000
+      refute_receive {:posting, _}, 100
+      send(pid, :go)
+    end
+
+    assert :ok = Task.await(flush)
+    assert length(received_posts(3)) == 3
+  end
+
+  test "flush_concurrency defaults to 8 and rejects a value that is not a positive integer" do
+    Application.delete_env(:dd_data_streams, :flush_concurrency)
+    on_exit(fn -> Application.delete_env(:dd_data_streams, :flush_concurrency) end)
+
+    assert Config.flush_concurrency() == 8
+
+    Application.put_env(:dd_data_streams, :flush_concurrency, 3)
+    assert Config.flush_concurrency() == 3
+
+    for value <- [0, -1, "8", 1.0, :eight] do
+      Application.put_env(:dd_data_streams, :flush_concurrency, value)
+
+      assert_raise ArgumentError, ~r/is not a positive integer/, fn ->
+        Config.flush_concurrency()
+      end
+    end
   end
 end

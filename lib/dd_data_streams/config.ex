@@ -31,6 +31,7 @@ defmodule DdDataStreams.Config do
     * `extractors/0` (via `DdDataStreams.extractors/0`) - on attach, on every
       consume, and on produce only as a fallback.
     * `agent_url/1`, `agent_host/0`, `agent_port/0` - on every flush.
+    * `flush_concurrency/0` - on every flush.
     * `transport/0` - on every flush, and once at application start for the
       default.
 
@@ -60,6 +61,8 @@ defmodule DdDataStreams.Config do
 
   @enabled_key :enabled
   @transport_key :transport
+  @flush_concurrency_key :flush_concurrency
+  @default_flush_concurrency 8
   @default_service "unnamed-elixir-service"
   @default_agent_url "http://localhost:8126"
   @default_agent_port "8126"
@@ -219,6 +222,31 @@ defmodule DdDataStreams.Config do
 
       url ->
         String.trim_trailing(url, "/")
+    end
+  end
+
+  @doc """
+  How many payloads are posted at once, read on every flush: `config
+  :dd_data_streams, flush_concurrency:`, `#{@default_flush_concurrency}`
+  otherwise.
+
+  One request goes out per service, so a pipeline that reports about eighty
+  services posts them in batches of this size instead of one after another. An
+  integer below 1, or a value that is not an integer, raises an
+  `ArgumentError` on the flush that reads it: a typo here must not silently
+  slow the flush down.
+  """
+  @spec flush_concurrency() :: pos_integer()
+  def flush_concurrency do
+    case Application.get_env(:dd_data_streams, @flush_concurrency_key) do
+      nil ->
+        @default_flush_concurrency
+
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value ->
+        raise ArgumentError, "flush_concurrency: #{inspect(value)} is not a positive integer"
     end
   end
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `flush_concurrency:`, the number of services a flush posts at once. Defaults
+  to 8; `1` posts them one after another, as before.
+
+### Changed
+
+- The aggregator posts the per-service payloads of one flush in parallel
+  instead of one after another, so an application that reports for many
+  services no longer spends the whole ten-second window in sequential agent
+  requests, and a slow one does not hold up the others.
+
 ## 0.3.0
 
 ### Added

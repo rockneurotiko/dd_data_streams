@@ -33,9 +33,12 @@ defmodule DdDataStreams.Aggregator do
   seconds, in which case the send is abandoned and the node keeps shutting
   down.
 
-  One payload and one request are built per service. The transport and the
-  agent URL are read from `DdDataStreams.Config` on every flush, so a change to
-  either applies to the next one.
+  One payload and one request are built per service, because the intake accepts
+  one service per payload. The requests go out in parallel, up to
+  `DdDataStreams.Config.flush_concurrency/0` at a time, and the flush returns
+  once every one of them has been attempted. The transport and the agent URL
+  are read from `DdDataStreams.Config` on every flush, so a change to either
+  applies to the next one.
 
   A checkpoint that cannot be aggregated is dropped instead of counted: it is
   reported in `[:dd_data_streams, :checkpoint, :invalid]` telemetry with a
@@ -362,10 +365,18 @@ defmodule DdDataStreams.Aggregator do
 
     due
     |> Enum.group_by(fn {{_family, service, _start}, _points} -> service end)
-    |> Enum.each(fn {service, entries} ->
-      counts = %{buckets: length(entries), points: points_count(entries), dropped: 0}
-      post(transport, service, build_payload(service, entries), counts)
-    end)
+    |> Task.async_stream(
+      fn {service, entries} ->
+        counts = %{buckets: length(entries), points: points_count(entries), dropped: 0}
+        post(transport, service, build_payload(service, entries), counts)
+      end,
+      max_concurrency: Config.flush_concurrency(),
+      ordered: false,
+      # The transport owns its request deadline and post/4 rescues and catches,
+      # so a task never raises: nothing here can wait forever.
+      timeout: :infinity
+    )
+    |> Stream.run()
 
     %{state | buckets: buckets}
   end
