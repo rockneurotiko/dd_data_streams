@@ -97,7 +97,7 @@ metadata: %{
     "dd-pathway-ctx-base64" => "6gAAAAAAAACAoKv++WKA2uKB+mI=",
     "origin" => "go"
   },
-  received_at: 1792699014982577561,
+  receivedAt: ~U[2026-10-22 19:56:54.982577Z],
   subscription: "projects/dsm-test/subscriptions/e2e-sub-1792699014834",
   ...
 }

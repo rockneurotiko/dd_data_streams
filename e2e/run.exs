@@ -110,7 +110,7 @@ defmodule E2e.Pipeline do
       data: message.data,
       inbound: inbound,
       subscription: metadata.subscription,
-      received_at: metadata.received_at,
+      received_at: DateTime.to_unix(metadata.receivedAt, :native),
       publish_time: metadata.publishTime,
       consume: consume,
       produce: outgoing.attributes

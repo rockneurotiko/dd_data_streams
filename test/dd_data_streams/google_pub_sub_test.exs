@@ -8,7 +8,7 @@ defmodule DdDataStreams.Extractor.GooglePubSubTest do
       subscription: "projects/my-project/subscriptions/orders-sub",
       attributes: %{"origin" => "test"},
       orderingKey: "customer-1",
-      received_at: 42
+      receivedAt: ~U[2026-10-26 19:00:00Z]
     }
 
     assert {:ok, tags, parts} = GooglePubSub.consume(metadata)
@@ -18,7 +18,7 @@ defmodule DdDataStreams.Extractor.GooglePubSubTest do
     assert parts == %{
              attributes: %{"origin" => "test"},
              ordering_key: "customer-1",
-             received_at: 42,
+             received_at: DateTime.to_unix(~U[2026-10-26 19:00:00Z], :native),
              pathway_start: nil,
              edge_start: nil
            }

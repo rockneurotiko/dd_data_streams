@@ -249,7 +249,7 @@ change.
 
 | Broker | Shipped extractor | Carrier | Tested package / version | Status & known limits |
 | --- | --- | --- | --- | --- |
-| Google Pub/Sub | `DdDataStreams.Extractor.GooglePubSub`, the default (`lib/dd_data_streams/extractor/google_pub_sub.ex`) | `DdDataStreams.Carrier.Flat` - attribute maps, header lists, AMQP 3-tuples | `broadway_cloud_pub_sub ~> 2.0.0-rc.2` (`e2e/mix.exs`); `test/dd_data_streams/google_pub_sub_test.exs`, `test/integration/pubsub_emulator_test.exs` | Shipped and tested. Consume checkpoints need 2.0.0-rc or newer: on stable 1.0.0 the metadata carries no `:subscription`, so nothing is recorded. |
+| Google Pub/Sub | `DdDataStreams.Extractor.GooglePubSub`, the default (`lib/dd_data_streams/extractor/google_pub_sub.ex`) | `DdDataStreams.Carrier.Flat` - attribute maps, header lists, AMQP 3-tuples | `broadway_cloud_pub_sub ~> 2.0.0-rc.3` (`e2e/mix.exs`); `test/dd_data_streams/google_pub_sub_test.exs`, `test/integration/pubsub_emulator_test.exs` | Shipped and tested. Consume checkpoints need 2.0.0-rc or newer: on stable 1.0.0 the metadata carries no `:subscription`, so nothing is recorded. |
 | Amazon SQS | `DdDataStreams.Extractor.SQS` (`lib/dd_data_streams/extractor/sqs.ex`) | `DdDataStreams.Carrier.Sqs` - the `_datadog` message attribute | `broadway_sqs ~> 1.0.1` (`mix.exs`); `test/dd_data_streams/sqs_test.exs`, `test/integration/sqs_broker_test.exs` (goaws) | Shipped, unit-tested and run against a real SQS API. The queue comes from the producer's `queue_url`, and the pipeline must request `message_attribute_names: ["_datadog"]` for the pathway to arrive and `attribute_names: [:sent_timestamp]` for publish latency. The emulator behind the tier stamps its own receive time as `SentTimestamp`, so send latency is only proven against real SQS. |
 | Kafka | `DdDataStreams.Extractor.Kafka` (`lib/dd_data_streams/extractor/kafka.ex`) | `DdDataStreams.Carrier.Flat` - header lists | `broadway_kafka ~> 0.7.1` (`mix.exs`); `test/dd_data_streams/kafka_test.exs`, `test/integration/kafka_broker_test.exs` (Apache Kafka 4.4) | Shipped, unit-tested and run against a real Kafka. `group:` is reported when the producer's `group_id` is known; `kafka_cluster_id` is not, because BroadwayKafka exposes no cluster id. |
 | RabbitMQ | `DdDataStreams.Extractor.RabbitMQ` (`lib/dd_data_streams/extractor/rabbitmq.ex`) | `DdDataStreams.Carrier.Flat` - AMQP 3-tuples | `broadway_rabbitmq ~> 0.8.2` (`mix.exs`); `test/dd_data_streams/rabbitmq_test.exs`, `test/integration/rabbitmq_broker_test.exs` (RabbitMQ 4.4) | Shipped, unit-tested and run against a real RabbitMQ. The queue comes from the producer's `queue:`, and the pipeline must set `metadata: [:headers, :timestamp]` or no header, and no publish time, reaches the pipeline. On RabbitMQ 4 the producer also needs `declare: [durable: true]`: the default `declare: []` asks for a transient queue, which 4.x refuses. |
@@ -533,7 +533,7 @@ case DdDataStreams.consume(%{
          subscription: message.metadata.subscription,
          attributes: message.metadata.attributes,
          orderingKey: nil,
-         received_at: message.metadata.received_at
+         receivedAt: message.metadata.receivedAt
        }
      }) do
   nil ->
@@ -558,8 +558,7 @@ it returned over with `DdDataStreams.Context.put(pathway)` there, and pass
 
 The metadata is the extractor's own contract: for the Pub/Sub extractor those
 are the values `BroadwayCloudPubSub` v2 exposes as
-`message.metadata.subscription`, `.attributes`, `.orderingKey` and `.received_at`
-(native time units).
+`message.metadata.subscription`, `.attributes`, `.orderingKey` and `.receivedAt` (a `DateTime`).
 
 Do not call `consume/1` yourself while `attach/0` is installed: the telemetry
 handler already records that checkpoint, and the message would be counted twice.

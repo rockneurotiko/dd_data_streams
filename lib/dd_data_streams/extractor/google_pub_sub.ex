@@ -4,13 +4,14 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
 
   A Pub/Sub message names its consume edge by its subscription, and v2 stamps it
   as `metadata.subscription` together with `metadata.attributes`,
-  `metadata.orderingKey` and `metadata.received_at`, which is what a checkpoint
+  `metadata.orderingKey` and `metadata.receivedAt`, which is what a checkpoint
   needs to name the edge. A message that carries no subscription - the shape
   `BroadwayCloudPubSub` v1 produces - records no consume checkpoint, because
   there is no name to report its edge under.
 
   Consume checkpoints therefore require `broadway_cloud_pub_sub` 2.0.0-rc or
-  newer, tested with 2.0.0-rc.2. On stable 1.0.0 the v1 metadata has no
+  newer, tested with 2.0.0-rc.3, the first to stamp the receive time as
+  `metadata.receivedAt`, a `%DateTime{}`. On stable 1.0.0 the v1 metadata has no
   `:subscription`, so `consume/1` returns `:error` for every message and a v1
   pipeline records nothing.
 
@@ -59,11 +60,16 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
     %{
       attributes: Map.get(metadata, :attributes),
       ordering_key: Map.get(metadata, :orderingKey),
-      received_at: Map.get(metadata, :received_at),
+      received_at: received_at(metadata),
       pathway_start: publish_time(metadata),
       edge_start: publish_time(metadata)
     }
   end
+
+  defp received_at(%{receivedAt: %DateTime{} = received_at}),
+    do: DateTime.to_unix(received_at, :native)
+
+  defp received_at(_metadata), do: nil
 
   # v2 stamps the publish time as a DateTime. Anything else - v1 metadata, a
   # hand-built fixture, a broken producer - leaves both starts nil, which is

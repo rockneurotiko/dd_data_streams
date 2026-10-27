@@ -162,7 +162,7 @@ defmodule DdDataStreams.PubSubEmulatorTest do
       attributes: message["attributes"],
       orderingKey: message["orderingKey"],
       subscription: "projects/#{@project}/subscriptions/#{names.in_subscription}",
-      received_at: received_at,
+      receivedAt: DateTime.from_unix!(received_at, :native),
       messageId: message["messageId"],
       publishTime: message["publishTime"],
       deliveryAttempt: nil

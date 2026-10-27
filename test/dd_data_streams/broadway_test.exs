@@ -85,7 +85,7 @@ defmodule DdDataStreams.BroadwayTest do
     header = reference_header()
     received_ms = header.edge_start + 42
     attributes = %{"dd-pathway-ctx-base64" => header.base64}
-    message = pubsub_message(attributes, received_at: native(received_ms))
+    message = pubsub_message(attributes, receivedAt: datetime(received_ms))
 
     assert :ok = DdDataStreams.attach()
     consume_event(message)
@@ -108,7 +108,7 @@ defmodule DdDataStreams.BroadwayTest do
 
   test "the consume checkpoint is stamped with the receive time, not the event time" do
     received_ms = 1_780_345_623_738
-    message = pubsub_message(nil, received_at: native(received_ms))
+    message = pubsub_message(nil, receivedAt: datetime(received_ms))
 
     assert :ok = DdDataStreams.attach()
     # Broadway's own timestamps are when the processor picked the message up.
@@ -177,7 +177,7 @@ defmodule DdDataStreams.BroadwayTest do
       metadata: %{
         attributes: %{key => value},
         subscription: @subscription,
-        received_at: native(1)
+        receivedAt: datetime(1)
       }
     })
 
@@ -337,7 +337,7 @@ defmodule DdDataStreams.BroadwayTest do
     assert :ok = DdDataStreams.attach()
 
     before = System.system_time(:millisecond)
-    consume_event(pubsub_message(nil, received_at: @absent))
+    consume_event(pubsub_message(nil, receivedAt: @absent))
     after_emit = System.system_time(:millisecond)
 
     assert_receive {:checkpoint, checkpoint}
@@ -871,7 +871,7 @@ defmodule DdDataStreams.BroadwayTest do
     Enum.map(headers, fn header ->
       pubsub_message(
         %{"dd-pathway-ctx-base64" => header.base64},
-        received_at: native(header.edge_start + 1)
+        receivedAt: datetime(header.edge_start + 1)
       )
     end)
   end
@@ -884,7 +884,7 @@ defmodule DdDataStreams.BroadwayTest do
       attributes: attributes,
       orderingKey: "customer-1",
       subscription: @subscription_resource,
-      received_at: native(1_780_345_623_738)
+      receivedAt: datetime(1_780_345_623_738)
     ]
     |> Keyword.merge(metadata)
     |> Enum.reject(fn {_key, value} -> value == @absent end)
@@ -953,7 +953,7 @@ defmodule DdDataStreams.BroadwayTest do
     end)
   end
 
-  defp native(milliseconds), do: System.convert_time_unit(milliseconds, :millisecond, :native)
+  defp datetime(milliseconds), do: DateTime.from_unix!(milliseconds, :millisecond)
 end
 
 defmodule DdDataStreams.BroadwayTest.ProducerAwareExtractor do

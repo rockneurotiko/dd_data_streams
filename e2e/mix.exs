@@ -20,7 +20,7 @@ defmodule E2e.MixProject do
   defp deps do
     [
       {:dd_data_streams, path: ".."},
-      {:broadway_cloud_pub_sub, "~> 2.0.0-rc.2"},
+      {:broadway_cloud_pub_sub, "~> 2.0.0-rc.3"},
       {:broadway, "~> 1.0"},
       # The harness talks to the emulator's REST API and reads JSON from it.
       {:req, "~> 0.5"},
