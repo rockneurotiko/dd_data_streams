@@ -59,6 +59,10 @@ at once. [Broker support](#broker-support) says exactly what ships.
 * `DdDataStreams.Context`: the pathway the current process produces from.
 * `DdDataStreams.Config`: the environment and application settings that
   configure the library.
+* `DdDataStreams.Backend`: the behaviour that decides whether the calling
+  process records and where one checkpoint goes. The default,
+  `DdDataStreams.Backend.Aggregator`, is production; tests can configure
+  `DdDataStreams.Testing.Backend` for per-test ownership.
 * `DdDataStreams.Transport`: the behaviour for posting to the Agent, with a Req
   implementation as the default and a `DdDataStreams.Transport.Capture`
   implementation for tests.
@@ -70,7 +74,7 @@ Add `:dd_data_streams` to your dependencies:
 ```elixir
 def deps do
   [
-    {:dd_data_streams, "~> 0.2.0"}
+    {:dd_data_streams, "~> 0.3.0"}
   ]
 end
 ```
@@ -594,11 +598,127 @@ library is disabled, so these calls need no guard at the call site.
 ## Testing your pipeline
 
 What a test suite should do depends on what it is testing: the pipeline's own
-code, or the library's effect on it. Two of the recipes start in
-`config/test.exs` and apply to a whole suite; a test can also flip the flag
-itself, without touching the boot configuration.
+code, the checkpoints the library derived from a message, or the wire-format
+payload a real aggregator would send. The first two can run with `async: true`;
+only the last needs the library's global switches and `async: false`.
 
-### Unit tests: turn the library off
+### Owner-scoped tests: the default, `async: true`
+
+Configure the test backend, start its ownership server once, and attach the
+Broadway handlers once at boot. The server is the test backend's own process, so
+production never starts it.
+
+```elixir
+# config/test.exs
+config :dd_data_streams, backend: DdDataStreams.Testing.Backend
+```
+
+```elixir
+# test/test_helper.exs
+{:ok, _} = DdDataStreams.Testing.Backend.start_link()
+DdDataStreams.attach()
+ExUnit.start()
+```
+
+`nimble_ownership` is an optional dependency of this library. A suite that uses
+the owner-scoped API adds it to its own dependencies:
+
+```elixir
+{:nimble_ownership, "~> 1.0"}
+```
+
+`attach/0` still decides whether to install handlers from the `enabled` flag, so
+leave that flag at its default `true` for the owner-scoped recipe; do not combine
+it with the `enabled: false` recipe below. Once installed, a handler asks the
+backend whether the process that emitted the event is recording, so a test that
+never opts in makes the same handler a no-op and never sees another test's
+checkpoints.
+
+A test opts in with `start/1` and reads the result with `checkpoints/1`:
+
+```elixir
+defmodule MyApp.OrdersTest do
+  use ExUnit.Case, async: true
+  use DdDataStreams.Testing
+
+  test "the consume checkpoint links to the produce checkpoint" do
+    DdDataStreams.Testing.start()
+
+    [{_key, value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
+
+    DdDataStreams.consume(%{
+      data: Jason.encode!(order),
+      metadata: %{
+        subscription: "projects/demo/subscriptions/orders-sub",
+        attributes: %{DdDataStreams.Config.header() => value}
+      }
+    })
+
+    produce = DdDataStreams.Testing.assert_produced("orders-out")
+    consume = DdDataStreams.Testing.assert_consumed("orders-sub")
+    DdDataStreams.Testing.assert_chained(produce, consume)
+  end
+end
+```
+
+`use DdDataStreams.Testing` only picks the ownership mode: private for an
+`async: true` case and shared for a sync one. A test that never calls `start/1`
+owns nothing, so `produce/3` returns `[]` and nothing is recorded, even though
+other tests in the same suite are recording at the same time. `start/1` is
+idempotent.
+
+Reading is synchronous. `checkpoints/1` returns the points recorded so far for
+the owner, oldest first, so there is no flush, no ten-second bucket window and
+nothing to wait for. Each point is a map with `:edge_tags`, `:hash`,
+`:parent_hash`, `:pathway_latency`, `:edge_latency`, `:payload_size` and
+`:timestamp_type`; the latencies and size are the integers the checkpoint
+measured, and `:timestamp_type` is `"current"` because this is the checkpoint
+itself rather than an aggregator bucket. The three assertion helpers are thin
+wrappers over it: `assert_produced/1` and `assert_consumed/1` find a point by
+its direction and topic or subscription tag, and `assert_chained/2` checks that
+a consume point's `parent_hash` is a produce point's `hash`.
+
+`subscribe/0` is the push alternative for a test that prefers `assert_receive`:
+the owner then receives `{DdDataStreams.Testing, :checkpoint, point}` for every
+point recorded after the call:
+
+```elixir
+DdDataStreams.Testing.start()
+DdDataStreams.Testing.subscribe()
+
+[_pair] = DdDataStreams.produce("orders-out", payload)
+
+assert_receive {DdDataStreams.Testing, :checkpoint, %{edge_tags: tags}}
+assert "topic:orders-out" in tags
+```
+
+#### Processes the test did not start
+
+A `Task` inherits the test's `$callers`, so it records into the same owner
+without any extra call. A process Broadway started does not, so allow it
+explicitly. Both arguments accept a pid or a registered name, and Broadway
+registers its stages under the pipeline's name:
+
+```elixir
+DdDataStreams.Testing.start()
+
+Broadway.start_link(MyApp.Pipeline, name: MyApp.Pipeline)
+DdDataStreams.Testing.allow(self(), :"MyApp.Pipeline.Broadway.Processor_default_0")
+DdDataStreams.Testing.allow(self(), :"MyApp.Pipeline.Broadway.BatchProcessor_default")
+```
+
+The processors are `...Processor_default_<index>` and the batchers
+`...BatchProcessor_default`; a pipeline with several processors allows each one.
+There is no hidden framework hook: `allow/2` is the supported way, and shared
+mode, which records every process into the test process, is the alternative for
+an `async: false` case.
+
+Nothing has to be cleaned up. `NimbleOwnership` monitors the owner and drops its
+checkpoints when the test process exits, so there is no `on_exit` and no
+detach. Tests using this API do not call `attach/0` or `detach/0` either: the
+handlers are installed once at boot, and an unowned process makes them no-ops.
+
+### Tests that do not record: the library off
 
 ```elixir
 # config/test.exs
@@ -606,21 +726,25 @@ config :dd_data_streams, enabled: false
 ```
 
 With the flag off, `attach/0` installs no handlers, `produce/3` and
-`produce_batch/3` return `[]`, `consume/1` and `checkpoint/1` record nothing,
-and no aggregator is started when the application boots. The pipeline code
-under test makes the same calls and takes the same branches as in production,
-but touches nothing global, so every test can be `async: true`: there is no
-handler id and no aggregator process for two tests to fight over.
+`produce_batch/3` return `[]`, and no aggregator is started when the application
+boots. This is the recipe for a suite that only tests the pipeline's own code;
+every test can be `async: true`. A suite that uses the owner-scoped backend does
+not need this flag: an unowned process already behaves as if the library were
+disabled.
 
-### Enabling the library for one test
+### Wire-format tests: the global path, `async: false`
 
-`DdDataStreams.Testing.enable!/1` flips the library on for one test and hands
-back the function that flips it back, so a suite that runs mostly disabled can
-still hold a few tests that record. Nothing restarts: the application that
-booted with the library off stays as it is.
+Some tests need more than a checkpoint: they need the encoded payload, the
+aggregator's buckets, or the exact bytes the Agent would receive. Those use the
+global testing API and run with `async: false`, because it flips the application
+environment, starts the one shared aggregator and attaches the VM-wide handler
+id.
+
+`DdDataStreams.Testing.enable!/1` flips the library on for one test and returns
+the function that flips it back:
 
 ```elixir
-defmodule MyApp.OrdersTest do
+defmodule MyApp.OrdersWireTest do
   use ExUnit.Case, async: false
 
   setup do
@@ -642,40 +766,23 @@ end
 attaches the handlers `attach/0` installs, and starts the aggregator when it is
 not already running. The cleanup it returns stops the aggregator the call
 started, detaches the handlers it attached and restores the application
-environment to what it was before the call; anything already running or
-already attached when it was called is left alone. It attaches handlers and
-starts a process the whole VM shares, so a test that uses it runs with
-`async: false`. To assert on what such a test flushed, `capture/1`, described
-next, runs a function and returns the points.
-
-### Integration tests: keep it on and capture the flushes
-
-```elixir
-# config/test.exs
-config :dd_data_streams,
-  enabled: true,
-  transport: DdDataStreams.Transport.Capture
-```
+environment to what it was before the call; anything already running or already
+attached when it was called is left alone.
 
 `DdDataStreams.Transport.Capture` posts nothing: each flush is reported on the
 `[:dd_data_streams, :transport, :captured]` telemetry event, whose metadata is
 `%{url: url, headers: headers, body: body}` with the exact gzip-compressed
-payload the agent would have received (`:zlib.gunzip/1` reads it back). The
-aggregator is started when the application boots, reading this transport like
-any other.
+payload the Agent would have received (`:zlib.gunzip/1` reads it back).
 
-`DdDataStreams.Testing.capture/1` does the rest: it attaches a handler under
-its own id, runs a function, calls `DdDataStreams.Aggregator.flush(:all)` to
-send every bucket at once - including the one still being filled, which
-`flush/0` keeps until its ten-second window completes - detaches again and
-returns the points of everything that was flushed, decoded by
-`DdDataStreams.Testing.decode_payload/1`. A checkpoint recorded a moment ago
-is therefore assertable immediately, on `hash` and `parent_hash` instead of
-on bytes:
+`DdDataStreams.Testing.capture/1` then runs a function, calls
+`DdDataStreams.Aggregator.flush(:all)` to send every bucket at once - including
+the one still being filled, which `flush/0` keeps until its ten-second window
+completes - and returns the points of everything that was flushed, decoded by
+`DdDataStreams.Testing.decode_payload/1`:
 
 ```elixir
 # In an async: false test: it observes the shared aggregator's flushes.
-defmodule MyApp.OrdersTest do
+defmodule MyApp.OrdersCaptureTest do
   use ExUnit.Case, async: false
 
   test "the consume checkpoint links to the produce checkpoint" do
@@ -705,45 +812,13 @@ Each point is a map with `:edge_tags`, `:hash`, `:parent_hash`,
 the three distributions stay binaries, exactly as they went on the wire.
 `decode_payload/1` is the decoder under it: it takes the gzip-compressed
 MsgPack body from any handler on the captured event and returns the whole
-payload as a plain map, so a test that wants the service or the bucket starts
-as well can decode a body it captured itself.
+payload as a plain map, so a test that wants the service or the bucket start as
+well can decode a body it captured itself.
 
-A test that exercises the Broadway handlers ends with `DdDataStreams.detach/0`,
-which removes the handlers `attach/0` installed and returns `:ok` whether or
-not anything was attached, so `on_exit` can call it unconditionally.
-
-### What makes these tests async: false
-
-Three things in this library belong to the whole VM, so a test that touches
-any of them runs with `async: false`:
-
-* The handler id. `attach/0` installs its handlers under one VM-global
-  telemetry id, `:dd_data_streams`, and `detach/0` removes that one id for
-  the whole VM. Two async tests that each attach and detach would therefore
-  race: one test's cleanup removes the handlers the other is still recording
-  with. Tests that call `attach/0` or `detach/0` - anything exercising the
-  Broadway path - are affected. Tests that never attach are not: every unit
-  test with the library disabled, and any test that calls `consume/1`,
-  `produce/3` or `checkpoint/1` directly, never touches the id.
-* The aggregator. There is one registered process, and `flush(:all)` sends
-  everything it holds, so a test that flushes while another test is recording
-  sends the other test's buckets too. `capture/1` attaches its handler under
-  an id of its own, unique per call, so its captures never collide with
-  another test's, but what it flushes is still the shared aggregator.
-* The application environment. `enable!/1` writes `:enabled`, `:transport`,
-  `:service` and `:env` and its cleanup restores them; two tests doing that
-  at once would restore each other's values.
-
-Per-process or per-pipeline filtering would not lift the last two. A
-telemetry handler runs in the Broadway stage process that emitted the event,
-so a process-scoped opt-in could decide per stage whether to record, but the
-aggregator those checkpoints are handed to and the configuration they are
-read from are still one per VM, and one test's flush would still send another
-test's points. Making these tests async would mean an aggregator per test and
-configuration scoped to the test: a redesign of how the library is started
-and configured, not a change to the handlers. So the limit stays: tests that
-record with the library on run with `async: false`, and the unit-test recipe
-at the top of this section, the library disabled, is the async one.
+A test that attaches or detaches handlers itself also runs with `async: false`,
+because the handler id is shared by the whole VM. Tests that leave the
+boot-time handlers alone do not: with the owner-scoped backend, a test that did
+not opt in makes every handler a no-op.
 
 ## Reference
 
@@ -1000,7 +1075,10 @@ config :dd_data_streams,
   # Defaults to [DdDataStreams.Extractor.GooglePubSub].
   extractors: [MyApp.KafkaExtractor, DdDataStreams.Extractor.GooglePubSub],
   # Defaults to DdDataStreams.Transport.Req when Req is available.
-  transport: MyApp.AgentTransport
+  transport: MyApp.AgentTransport,
+  # Defaults to DdDataStreams.Backend.Aggregator. Tests can use
+  # DdDataStreams.Testing.Backend instead.
+  backend: DdDataStreams.Backend.Aggregator
 ```
 
 When each setting is read:
@@ -1014,6 +1092,7 @@ When each setting is read:
 | `extractors` | on attach, on every consume, and on produce only as a fallback |
 | `agent_url`, `agent_host`, `agent_port` | on every flush |
 | `transport` | on every flush, and once when the application starts (for the default) |
+| `backend` | on every produce, consume and checkpoint call, and in the Broadway handlers |
 
 So changing any of them at runtime with `Application.put_env/3` or
 `System.put_env/2` affects the next use, except that a runtime change cannot
@@ -1039,13 +1118,16 @@ release. Two ways to set it, in this order:
 
 The flag is read in two different places, and the difference matters:
 
-* `attach/0`, `produce/3` and `produce_batch/3` read it on every call, so they
-  follow a runtime change: attaching after boot installs handlers, and disabling
-  stops producing the pair.
+* `attach/0`, and the default backend on every `produce/3`, `produce_batch/3`,
+  `consume/1` and `checkpoint/1` call, read it on every call, so they follow a
+  runtime change: attaching after boot installs handlers, and disabling stops
+  producing the pair. A backend other than the default decides for itself; the
+  owner-scoped test backend, for example, ignores this flag.
 * `DdDataStreams.Application` reads it once, when the application starts. The
   aggregator is only started if the library was enabled at boot; turning the
-  flag on later leaves handlers recording checkpoints that the aggregator drops
-  in silence, and turning it off later leaves the aggregator running.
+  flag on later makes the handlers record into an aggregator that is not
+  running, and turning it off later leaves the aggregator running but stops the
+  recording until the flag is on again.
 
 Restart the application to change whether the aggregator runs.
 

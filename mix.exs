@@ -7,7 +7,7 @@ defmodule DdDataStreams.MixProject do
     [
       app: :dd_data_streams,
       name: "DD Data Streams",
-      version: "0.2.0",
+      version: "0.3.0",
       elixir: "~> 1.17",
       description: "Datadog Data Streams Monitoring for Broadway pipelines",
       source_url: @source_url,

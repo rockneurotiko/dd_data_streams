@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- `DdDataStreams.Backend`, the behaviour that decides whether the calling
+  process is recording and where one checkpoint goes. The default,
+  `DdDataStreams.Backend.Aggregator`, wraps the previous behaviour exactly, so
+  an application that configures no backend is unaffected.
+- `DdDataStreams.Testing.Backend`, an owner-scoped backend built on
+  `NimbleOwnership`. It records into the test process that opted in and nowhere
+  else, so tests that use it can run with `async: true`. `nimble_ownership` is
+  an optional dependency of the library and is only needed by a suite that uses
+  this backend.
+- `DdDataStreams.Testing.start/1`, `allow/2`, `checkpoints/1`, `subscribe/0`,
+  `set_private/0`, `set_global/1`, `set_from_context/1` and the assert helpers
+  `assert_produced/1`, `assert_consumed/1` and `assert_chained/2` are the
+  public owner-scoped API. `use DdDataStreams.Testing` installs the mode setup.
+
+### Changed
+
+- `produce/3`, `produce_batch/3`, `consume/1`, `checkpoint/1` and the Broadway
+  handlers ask the configured backend whether to record instead of reading the
+  enabled flag directly. The default backend keeps the old answer.
+- The handlers installed by `attach/0` are safe to leave attached for a whole
+  test suite: an unowned process is a no-op. `attach/0` stays idempotent.
+- `DdDataStreams.Testing.enable!/1` and `capture/1` are documented as the global,
+  `async: false` tools for the aggregator and wire-format path.
+
+### Docs
+
+- The testing section of the README documents the owner-scoped flow first, with
+  the global capture recipe as the `async: false` exception. It no longer claims
+  that every test using the library must be `async: false`.
+
 ## 0.2.0
 
 ### Added
