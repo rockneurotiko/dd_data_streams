@@ -11,6 +11,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A cheap gate so the expensive broker tiers never start on code that does
+  # not compile or lint clean. Everything else runs in parallel with it.
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          elixir-version: "1.20"
+
+      - uses: actions/cache@v5
+        id: cache-deps
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-1.20-29-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-1.20-29-
+
+      - run: mix do deps.get --check-locked, deps.compile
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+
+      - run: mix format --check-formatted
+
+      - run: mix deps.unlock --check-unused
+
+      - run: mix compile --warnings-as-errors
+
+      - run: mix credo --strict
+
+  # The protocol core across the supported version range. Runs fully in
+  # parallel with lint and the broker tiers; nothing downstream waits on it.
   test:
     name: test (${{ matrix.elixir }}/${{ matrix.otp }})
     runs-on: ubuntu-24.04
@@ -30,10 +68,10 @@ jobs:
           - elixir: "1.19"
             otp: "28"
 
-          # What .tool-versions pins, and where lint and coverage run once.
+          # What .tool-versions pins. Runs the suite under coverage so the
+          # threshold in mix.exs cannot lose ground unnoticed.
           - elixir: "1.20"
             otp: "29"
-            lint: lint
             coverage: coverage
     steps:
       - uses: actions/checkout@v6
@@ -57,20 +95,6 @@ jobs:
         if: steps.cache-deps.outputs.cache-hit != 'true'
 
       # The default suite is the protocol core: offline, no broker, no agent.
-      - run: mix format --check-formatted
-        if: matrix.lint
-
-      - run: mix deps.unlock --check-unused
-        if: matrix.lint
-
-      - run: mix compile --warnings-as-errors
-        if: matrix.lint
-
-      - run: mix credo --strict
-        if: matrix.lint
-
-      # Fails below the threshold in mix.exs, so the offline suite cannot lose
-      # ground unnoticed.
       - run: mix test --cover
         if: matrix.coverage
 
@@ -79,7 +103,7 @@ jobs:
 
   broker:
     name: broker tier (${{ matrix.broker }})
-    needs: test
+    needs: lint
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
@@ -124,7 +148,7 @@ jobs:
 
   emulator:
     name: broker tier (Pub/Sub emulator)
-    needs: test
+    needs: lint
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
@@ -188,7 +212,7 @@ jobs:
 
   e2e:
     name: pipeline tier (Broadway + Pub/Sub)
-    needs: test
+    needs: lint
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
@@ -265,7 +289,7 @@ jobs:
 
   agent:
     name: agent tier (transport)
-    needs: test
+    needs: lint
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
