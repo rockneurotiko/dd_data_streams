@@ -17,7 +17,7 @@ defmodule DdDataStreams.MixProject do
       package: [
         licenses: ["Beerware"],
         links: %{"GitHub" => @source_url},
-        files: ~w(lib mix.exs .formatter.exs README.md LICENSE)
+        files: ~w(lib mix.exs .formatter.exs README.md CHANGELOG.md LICENSE)
       ],
       aliases: aliases(),
       test_coverage: [summary: [threshold: 90]]

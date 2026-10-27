@@ -79,6 +79,9 @@ end
 transport to the Agent; if you pass your own transport (see
 [Application configuration](#application-configuration)), you do not need it, and
 if you do not have it the startup logs an error telling you to configure one.
+Any Req `~> 0.5` is supported: the transport only passes options Req has
+accepted since 0.5, because Req raises `ArgumentError` on an option its own
+version does not know.
 
 The library requires Elixir 1.17 or later.
 
@@ -1109,6 +1112,25 @@ real Agent with an API key.
 pipeline on `BroadwayCloudPubSub.Pull.Producer` against the same emulator, with a
 capture transport instead of the Agent and a reference decoder that reads the
 body back.
+
+### Checking the transport against another Req
+
+The library supports any Req `~> 0.5`, but this suite can only resolve Req
+`0.7.x`, because `broadway_sqs` requires `~> 0.7.2`. To check a change to
+`DdDataStreams.Transport.Req` against another version of Req, pin it in a
+throwaway project that depends on the library by path:
+
+```sh
+mix new /tmp/req_check && cd /tmp/req_check
+# in mix.exs: deps do [{:dd_data_streams, path: "/path/to/dd_data_streams"}, {:req, "== 0.5.0"}] end
+mix deps.get
+mix run -e 'IO.inspect(DdDataStreams.Transport.Req.post("http://127.0.0.1:1/", [], "x"))'
+```
+
+A Req that accepts every option the transport passes answers `{:error,
+%Req.TransportError{}}` - the connection to port 1 is refused, which happens
+after option validation; one that does not know an option fails with
+`%ArgumentError{}` instead.
 
 ## License
 

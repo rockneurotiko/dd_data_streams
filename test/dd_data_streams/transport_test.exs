@@ -49,6 +49,17 @@ defmodule DdDataStreams.TransportTest do
                  "body"
                )
     end
+
+    # Req validates the options it is given and raises on one it does not know,
+    # so an option outside the supported Req range would crash here rather than
+    # post. The transport must never raise either way: an exception would take
+    # the aggregator down with it and drop every bucket in silence.
+    test "an exception from Req or the body comes back as an error, never raised" do
+      assert {:error, %ArgumentError{}} = ReqTransport.post(nil, @headers, "body")
+
+      assert {:error, %ArgumentError{}} =
+               ReqTransport.post("http://127.0.0.1:1/v0.1/pipeline_stats", @headers, [:bad])
+    end
   end
 
   describe "agent_url/1" do
