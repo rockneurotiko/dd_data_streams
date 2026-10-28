@@ -6,9 +6,18 @@
 
 - `flush_concurrency:`, the number of services a flush posts at once. Defaults
   to 8; `1` posts them one after another, as before.
+- `produce/3` and `produce_batch/3` return a second `{key, value}` pair carrying
+  the outgoing topic under `dd-topic`, next to the pathway header. A Pub/Sub
+  consume edge reads it back and reports `topic:<topic>` alongside
+  `subscription:<subscription>`, so Datadog can fill `visited_queues` and
+  `detailed_pathway`. A message that does not carry the attribute keeps the
+  subscription-only edge. `DdDataStreams.Propagator.topic_header/0` names the
+  attribute.
 
 ### Changed
 
+- The Google Pub/Sub consume node hash changes once, because the consume edge
+  now carries the hashed `topic` tag when the producer wrote one.
 - The aggregator posts the per-service payloads of one flush in parallel
   instead of one after another, so an application that reports for many
   services no longer spends the whole ten-second window in sequential agent

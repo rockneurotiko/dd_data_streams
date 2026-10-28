@@ -2,6 +2,52 @@ defmodule DdDataStreams.Extractor.GooglePubSubTest do
   use ExUnit.Case, async: true
 
   alias DdDataStreams.Extractor.GooglePubSub
+  alias DdDataStreams.{Pathway, Propagator}
+
+  test "a message that carries the produced topic reports it next to the subscription" do
+    metadata = %{
+      subscription: "projects/my-project/subscriptions/orders-sub",
+      attributes: %{"origin" => "test", Propagator.topic_header() => "orders"}
+    }
+
+    assert {:ok, tags, _parts} = GooglePubSub.consume(metadata)
+
+    assert tags == [
+             "direction:in",
+             "subscription:orders-sub",
+             "topic:orders",
+             "type:google-pubsub"
+           ]
+
+    assert is_binary(Propagator.topic_header())
+  end
+
+  test "a topic attribute that is not a string is ignored" do
+    for topic <- [nil, 42, ""] do
+      assert {:ok, tags, _parts} =
+               GooglePubSub.consume(%{
+                 subscription: "orders-sub",
+                 attributes: %{Propagator.topic_header() => topic}
+               })
+
+      assert tags == ["direction:in", "subscription:orders-sub", "type:google-pubsub"]
+    end
+  end
+
+  test "the topic tag changes the consume node hash once" do
+    {:ok, without_topic, _parts} = GooglePubSub.consume(%{subscription: "orders-sub"})
+
+    {:ok, with_topic, _parts} =
+      GooglePubSub.consume(%{
+        subscription: "orders-sub",
+        attributes: %{Propagator.topic_header() => "orders"}
+      })
+
+    assert Pathway.node_hash("checkout", "prod", nil, without_topic) ==
+             7_951_410_199_073_889_140
+
+    assert Pathway.node_hash("checkout", "prod", nil, with_topic) == 720_515_027_144_984_330
+  end
 
   test "a subscription resource name is reduced to its short id" do
     metadata = %{

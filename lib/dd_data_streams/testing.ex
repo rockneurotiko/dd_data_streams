@@ -29,13 +29,11 @@ defmodule DdDataStreams.Testing do
         test "the consume checkpoint links to the produce checkpoint" do
           DdDataStreams.Testing.start()
 
-          [{_key, value}] = DdDataStreams.produce("orders-out", payload)
-
           DdDataStreams.consume(%{
             data: payload,
             metadata: %{
               subscription: "projects/demo/subscriptions/orders-sub",
-              attributes: %{DdDataStreams.Config.header() => value}
+              attributes: Map.new(DdDataStreams.produce("orders-out", payload))
             }
           })
 

@@ -55,12 +55,14 @@ defmodule DdDataStreams.Checkpoints do
 
   The produce size is the caller's: `DdDataStreams.produce/3` passes the
   `:payload_size` option when given, or the size of `data` otherwise, and adds
-  the size of the pathway header it is about to write - the configured key plus
-  the encoded value. That is all produce can see: structurally it cannot see
-  the attributes the publisher put on the message, while consume counts every
-  attribute and the ordering key on the arriving one. The two sides therefore
-  agree only for a bare message; pass `:payload_size` to count the rest. A
-  caller that measures its message itself measures it without that header.
+  the size of the pairs it is about to write - the configured pathway key plus
+  its encoded value, and the `dd-topic` key plus its value. Those pairs are the
+  library's own propagation attributes, not user attributes. That is all produce
+  can see: structurally it cannot see the attributes the publisher put on the
+  message, while consume counts every attribute and the ordering key on the
+  arriving one. The two sides therefore agree only for a bare message; pass
+  `:payload_size` to count the rest. A caller that measures its message itself
+  measures it without those pairs.
 
   ## Latency
 

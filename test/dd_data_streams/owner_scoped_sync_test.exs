@@ -33,7 +33,7 @@ defmodule DdDataStreams.OwnerScopedSyncTest do
       send(parent, {:produced, DdDataStreams.produce("orders-shared", "payload")})
     end)
 
-    assert_receive {:produced, [{_key, _value}]}
+    assert_receive {:produced, [{_key, _value} | _topic]}
     assert [%{edge_tags: tags}] = Testing.checkpoints()
     assert "topic:orders-shared" in tags
   end
@@ -41,7 +41,7 @@ defmodule DdDataStreams.OwnerScopedSyncTest do
   test "set_global/1 is accepted by a sync case" do
     assert :ok = Testing.set_global(%{async: false})
 
-    [{_key, _value}] = DdDataStreams.produce("orders-global", "payload")
+    [{_key, _value} | _topic] = DdDataStreams.produce("orders-global", "payload")
     assert [%{edge_tags: tags}] = Testing.checkpoints()
     assert "topic:orders-global" in tags
   end

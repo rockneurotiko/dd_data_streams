@@ -44,20 +44,16 @@ defmodule DdDataStreams do
 
         attributes = existing_attributes
 
-        attributes =
-          case DdDataStreams.produce("orders-out", data) do
-            [{key, value}] -> Map.put(attributes, key, value)
-            [] -> attributes
-          end
+        attributes = Enum.into(DdDataStreams.produce("orders-out", data), attributes)
 
         MyApp.Publisher.publish("orders-out", data, attributes: attributes)
         message
       end
 
-  `produce/3` records the produce checkpoint and returns the key/value pair to
-  put on the outgoing message; it does not publish. `produce_batch/3` does the
-  same for several payloads published to one topic and returns one pair for the
-  whole batch.
+  `produce/3` records the produce checkpoint and returns the attributes to add
+  to the outgoing message - the pathway header and the topic - without
+  publishing. `produce_batch/3` does the same for several payloads published to
+  one topic and returns the same attributes for the whole batch.
 
   `attach/0` installs two telemetry handlers:
 
@@ -112,7 +108,16 @@ defmodule DdDataStreams do
   is not running), so none of these needs to be guarded at the call site.
   """
 
-  alias DdDataStreams.{Aggregator, Backend, Checkpoints, Config, Context, Pathway, Propagator}
+  alias DdDataStreams.{
+    Aggregator,
+    Backend,
+    Checkpoints,
+    Config,
+    Context,
+    Pathway,
+    Propagator,
+    Tags
+  }
 
   require Logger
 
@@ -291,36 +296,32 @@ defmodule DdDataStreams do
 
   @doc """
   Records the produce checkpoint for `data` published to `topic` and returns the
-  `{key, value}` pair to add to the outgoing message's attributes or headers.
+  `{key, value}` pairs to add to the outgoing message's attributes or headers.
 
-  It does not publish. The caller adds the pair to the same metadata the
+  It does not publish. The caller merges the pairs into the same metadata the
   receiver will read:
 
-      attributes = existing_attributes
-
-      attributes =
-        case DdDataStreams.produce("orders-out", data) do
-          [{key, value}] -> Map.put(attributes, key, value)
-          [] -> attributes
-        end
+      attributes = Enum.into(DdDataStreams.produce("orders-out", data), existing_attributes)
 
       MyApp.PubSub.publish("orders-out", data, attributes: attributes)
 
-  The key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"` unless
-  configured. The pathway continued is the one in `DdDataStreams.Context`, so
-  this is meant to be called from the stage that consumed the message being
-  answered: inside `handle_message/3` it chains the produce onto that message's
-  consume checkpoint, inside `handle_batch/4` onto the batch's fan-in pathway.
-  With no context the produce starts a new pathway. This function does not
-  change the context.
+  The pathway key is `DdDataStreams.Config.header/0`, `"dd-pathway-ctx-base64"`
+  unless configured, and the topic is written under
+  `DdDataStreams.Propagator.topic_header/0`, `"dd-topic"`. The topic pair is
+  only returned when the outgoing extractor names a topic, so a consumer can
+  report the topic its metadata does not carry. The pathway continued is the one
+  in `DdDataStreams.Context`, so this is meant to be called from the stage that
+  consumed the message being answered: inside `handle_message/3` it chains the
+  produce onto that message's consume checkpoint, inside `handle_batch/4` onto
+  the batch's fan-in pathway. With no context the produce starts a new pathway.
+  This function does not change the context.
 
   `data` is the outgoing payload. It is only measured, never inspected: a binary
   is measured with `byte_size/1`, and anything else counts as zero. The size of
-  the `{key, value}` pair this function returns is added to it, because that
-  pair travels with the message and the consumer measures every attribute it
-  receives: measure the message without the pair. Pass `payload_size:` when the
-  payload's size is known another way, or when the message's own attributes
-  should be counted.
+  the pairs this function returns is added to it, because they travel with the
+  message and the consumer measures every attribute it receives: measure the
+  message without the pairs. Pass `payload_size:` when the payload's size is
+  known another way, or when the message's own attributes should be counted.
 
   Call it immediately before sending: the checkpoint is recorded when this
   function runs, so a send that never happens still reports a produce.
@@ -348,8 +349,8 @@ defmodule DdDataStreams do
       configured one; a stage that produces without consuming and has several
       extractors must pass it.
     * `:payload_size` - the size in bytes to report, a non-negative integer.
-      Defaults to the size of `data`. The pair this function returns is added to
-      it, so pass the size of the message without that pair.
+      Defaults to the size of `data`. The pairs this function returns are added
+      to it, so pass the size of the message without those pairs.
     * `:service` - the service to report this produce under, overriding the
       configured `DdDataStreams.ServiceName` and `DdDataStreams.Config.service/0`.
       A consume in the same stage does not inherit it: each checkpoint asks for
@@ -378,29 +379,23 @@ defmodule DdDataStreams do
           service: out_service(tags, topic, opts)
         )
 
-      pair = {Config.header(), Propagator.encode_str(pathway)}
-      Backend.record(%{checkpoint | payload_size: checkpoint.payload_size + header_size(pair)})
-      [pair]
+      pairs = propagation(tags, pathway)
+      Backend.record(%{checkpoint | payload_size: checkpoint.payload_size + pairs_size(pairs)})
+      pairs
     else
       []
     end
   end
 
   @doc """
-  Records one produce checkpoint per payload in `datas` and returns one
-  `{key, value}` pair for the whole batch.
+  Records one produce checkpoint per payload in `datas` and returns the
+  `{key, value}` pairs for the whole batch.
 
-  All the payloads are published to the same `topic`; the pair is the same for
-  every message because the batch shares one produce node. Add it to each
+  All the payloads are published to the same `topic`; the pairs are the same for
+  every message because the batch shares one produce node. Add them to each
   message's metadata:
 
-      attributes = existing_attributes
-
-      attributes =
-        case DdDataStreams.produce_batch("orders-out", payloads) do
-          [{key, value}] -> Map.put(attributes, key, value)
-          [] -> attributes
-        end
+      attributes = Enum.into(DdDataStreams.produce_batch("orders-out", payloads), existing_attributes)
 
       MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)
 
@@ -410,7 +405,7 @@ defmodule DdDataStreams do
   `[]`; a disabled library returns `[]`.
 
   Payload size is `byte_size/1` per binary payload, or zero otherwise, plus the
-  size of the pair this function returns, as `produce/3` does. There is no
+  size of the pairs this function returns, as `produce/3` does. There is no
   `:payload_size` option here: call `produce/3` once per message when each size
   needs to be measured differently.
 
@@ -427,10 +422,7 @@ defmodule DdDataStreams do
     end
 
     if Backend.enabled?() do
-      case produce_all(topic, Enum.to_list(datas), opts) do
-        [] -> []
-        pair -> [pair]
-      end
+      produce_all(topic, Enum.to_list(datas), opts)
     else
       []
     end
@@ -802,13 +794,13 @@ defmodule DdDataStreams do
         service: out_service(tags, topic, opts)
       )
 
-    pair = {Config.header(), Propagator.encode_str(pathway)}
+    pairs = propagation(tags, pathway)
 
     Enum.each(datas, fn data ->
-      Backend.record(%{checkpoint | payload_size: bytes(data) + header_size(pair)})
+      Backend.record(%{checkpoint | payload_size: bytes(data) + pairs_size(pairs)})
     end)
 
-    pair
+    pairs
   end
 
   defp payload_size(data, opts) do
@@ -831,9 +823,23 @@ defmodule DdDataStreams do
   defp bytes(_data), do: 0
 
   # The pathway pair goes out with the message and the consume side measures
-  # every attribute it arrives with, so the produce side counts the pair it is
-  # about to send; attributes the publisher added stay unseen on this side.
-  defp header_size({key, value}), do: byte_size(key) + byte_size(value)
+  # every attribute it arrives with, so the produce side counts the pairs it is
+  # about to send; attributes the publisher added stay unseen on this side. The
+  # topic is written next to the pathway because a Pub/Sub consume edge gets
+  # only the subscription from the broker, and Datadog builds the queue in the
+  # middle of a pathway from the topic tag.
+  defp propagation(tags, pathway) do
+    pairs = [{Config.header(), Propagator.encode_str(pathway)}]
+
+    case Tags.get(tags, "topic") do
+      nil -> pairs
+      topic -> pairs ++ [{Propagator.topic_header(), topic}]
+    end
+  end
+
+  defp pairs_size(pairs), do: Enum.reduce(pairs, 0, fn pair, size -> size + pair_size(pair) end)
+
+  defp pair_size({key, value}), do: byte_size(key) + byte_size(value)
 
   # Checkpoint tags are reported verbatim, so a non-binary can never be split
   # into a key and value later; reject it at the boundary instead of dropping

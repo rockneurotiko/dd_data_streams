@@ -167,7 +167,7 @@ header, service, environment, service namer and extractors.
 
 ### 4. Produce
 
-Measure the payload, ask the library for the metadata pair, and add it to the
+Measure the payload, ask the library for the metadata pairs, and add them to the
 message your client sends. For Pub/Sub:
 
 ```elixir
@@ -175,28 +175,26 @@ defmodule MyApp.Orders do
   def publish(order) do
     data = Jason.encode!(order)
 
-    attributes = existing_attributes
-
-    attributes =
-      case DdDataStreams.produce("orders", data) do
-        [{key, value}] -> Map.put(attributes, key, value)
-        [] -> attributes
-      end
+    attributes = Enum.into(DdDataStreams.produce("orders", data), existing_attributes)
 
     MyApp.PubSub.publish("orders", data, attributes: attributes)
   end
 end
 ```
 
-`produce/3` records the produce checkpoint and returns a list containing
-`{key, value}`; `[]` means the library is disabled, so there is nothing to add.
-The key is `DdDataStreams.Config.header/0`, `dd-pathway-ctx-base64` unless
-configured (see [Configuration](#configuration)), and the value is the encoded
-pathway: the node hash and the pathway and edge start times, base64 encoded.
-Merge the pair into the metadata the message already carries - never replace the
-other attributes or headers - and the broker has to preserve it on the way
-through. The consumer reads it automatically; a missing or malformed value is
-not an error: the message starts a new pathway, with zero latency.
+`produce/3` records the produce checkpoint and returns a list of `{key, value}`
+pairs; `[]` means the library is disabled, so there is nothing to add. The first
+pair is the pathway under `DdDataStreams.Config.header/0`,
+`dd-pathway-ctx-base64` unless configured (see
+[Configuration](#configuration)), and its value is the encoded pathway: the node
+hash and the pathway and edge start times, base64 encoded. The second pair is
+the topic under `dd-topic`, written whenever the outgoing extractor names a
+topic, so a consumer whose metadata carries only its subscription can still
+report the topic. Merge the pairs into the metadata the message already carries
+- never replace the other attributes or headers - and the broker has to
+preserve them on the way through. The consumer reads the pathway automatically;
+a missing or malformed value is not an error: the message starts a new pathway,
+with zero latency.
 
 Call `produce/3` immediately before the send. The checkpoint is recorded when
 the function runs, so a send that never happens still reports a produce.
@@ -214,7 +212,7 @@ publishing to a different bus than it consumed from under
 The handler from step 3 records the consume checkpoint for every message, using
 the producer's pathway value when it is present. In `handle_message/3`, answer
 with `produce/3` exactly as the producer did in step 4: measure the outgoing
-payload, take the pair it returns, and merge it into the outgoing message.
+payload, take the pairs it returns, and merge them into the outgoing message.
 
 The pathway is taken from the process context the handler filled in for this
 message, so the produce edge continues the consumed one. In `handle_batch/4`
@@ -294,11 +292,21 @@ nothing. A message that carries no subscription records no consume checkpoint,
 because there is no name to report it under.
 
 The pathway rides in an attribute, and `DdDataStreams.Carrier.Flat` reads and
-writes attribute maps (and header lists), so the producer merges the pair
+writes attribute maps (and header lists), so the producer merges the pairs
 `produce/3` returns into the attributes exactly as the
 [quickstart](#quickstart) does. What the extractor reports for each edge -
 including how Pub/Sub's full resource names are reduced to short ids - is under
 [Edge tags](#edge-tags).
+
+A consume edge normally knows only its subscription, because that is all the
+message metadata carries. `produce/3` also writes the outgoing topic under the
+`dd-topic` attribute, and the extractor reads it back, so a consume edge that
+follows a producer using this library reports both tags. Datadog derives the
+queues in the middle of a pathway - `visited_queues` on
+`data_streams.latency` and the queue entries of `detailed_pathway` - from the
+`topic` tag, so without it the queue between two services is missing. A message
+from outside, or from a producer that did not write the attribute, keeps the
+subscription-only edge; the topic is never guessed from the subscription name.
 
 Pub/Sub stamps the time it accepted the message, and the extractor reports it as
 the first-hop start, so a pipeline that only consumes - no upstream service
@@ -356,17 +364,18 @@ The produce side writes the `_datadog` attribute itself, as described under
 For SQS, BroadwaySQS exposes the pathway under the `_datadog` message
 attribute as a JSON object. `DdDataStreams.Carrier.Sqs` unwraps that JSON to
 read the pathway and merges a produced header into it, so a producer wraps the
-`{key, value}` pair returned by `DdDataStreams.produce/3` into the `_datadog`
-attribute's JSON rather than adding it as a separate attribute:
+pairs returned by `DdDataStreams.produce/3` into the `_datadog` attribute's
+JSON rather than adding them as separate attributes:
 
 ```elixir
 attributes = existing_attributes
 
 attributes =
-  case DdDataStreams.produce("orders", data) do
-    [{key, value}] -> Map.put(attributes, "_datadog", Jason.encode!(%{key => value}))
-    [] -> attributes
-  end
+  Map.put(
+    attributes,
+    "_datadog",
+    DdDataStreams.produce("orders", data) |> Map.new() |> Jason.encode!()
+  )
 ```
 
 ### RabbitMQ
@@ -453,19 +462,13 @@ quickstart.
 ### Producing from a Broadway pipeline
 
 In `handle_message/3`, call `DdDataStreams.produce/3` with the outgoing payload
-and merge the pair it returns into the outgoing message - the block is the one
+and merge the pairs it returns into the outgoing message - the block is the one
 in step 4 of the [quickstart](#quickstart), unchanged. It does not publish, and
 the pathway is taken from the process context that `attach/0` filled in for this
-message. A client that takes a header list uses the same pair:
+message. A client that takes a header list uses the same pairs:
 
 ```elixir
-headers = existing_headers
-
-headers =
-  case DdDataStreams.produce("orders-out", data) do
-    [{key, value}] -> headers ++ [{key, value}]
-    [] -> headers
-  end
+headers = existing_headers ++ DdDataStreams.produce("orders-out", data)
 
 MyApp.Kafka.produce("orders-out", data, headers: headers)
 ```
@@ -490,9 +493,9 @@ context is kept per process, so a task sees no pathway and starts a new one.
 ### Batching
 
 One send can answer a whole batch. `produce_batch/3` records one checkpoint per
-payload and returns one pair for the whole batch - the batch shares one produce
-node - and that pair is merged into the outgoing message exactly as the
-[quickstart](#quickstart) merges the single-message pair, on the producer as
+payload and returns the pairs for the whole batch - the batch shares one produce
+node - and those pairs are merged into the outgoing message exactly as the
+[quickstart](#quickstart) merges the single-message pairs, on the producer as
 well as in the pipeline.
 
 In `handle_batch/4` the context holds one pathway sampled from the batch, so
@@ -502,13 +505,7 @@ one send answers the batch and stays connected to the consumed messages:
 def handle_batch(_batcher, messages, _batch_info, _context) do
   payloads = Enum.map(messages, &encode(&1.data))
 
-  attributes = existing_attributes
-
-  attributes =
-    case DdDataStreams.produce_batch("orders-out", payloads) do
-      [{key, value}] -> Map.put(attributes, key, value)
-      [] -> attributes
-    end
+  attributes = Enum.into(DdDataStreams.produce_batch("orders-out", payloads), existing_attributes)
 
   MyApp.PubSub.publish_batch("orders-out", payloads, attributes: attributes)
   messages
@@ -550,7 +547,7 @@ case DdDataStreams.consume(%{
 
   pathway ->
     # LATER, when the message is answered, in the same process: produce exactly
-    # as the quickstart does - `DdDataStreams.produce/3` returns the pair to add
+    # as the quickstart does - `DdDataStreams.produce/3` returns the pairs to add
     # to the outgoing message - and this pathway continues the edge.
     pathway
 end
@@ -644,13 +641,13 @@ defmodule MyApp.OrdersTest do
   test "the consume checkpoint links to the produce checkpoint" do
     DdDataStreams.Testing.start()
 
-    [{_key, value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
+    pairs = DdDataStreams.produce("orders-out", Jason.encode!(order))
 
     DdDataStreams.consume(%{
       data: Jason.encode!(order),
       metadata: %{
         subscription: "projects/demo/subscriptions/orders-sub",
-        attributes: %{DdDataStreams.Config.header() => value}
+        attributes: Map.new(pairs)
       }
     })
 
@@ -753,7 +750,7 @@ defmodule MyApp.OrdersWireTest do
   end
 
   test "the produce checkpoint reaches the aggregator" do
-    [{_key, value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
+    [{_key, value} | _topic] = DdDataStreams.produce("orders-out", Jason.encode!(order))
     assert is_binary(value)
 
     assert DdDataStreams.status().aggregator_running
@@ -788,13 +785,13 @@ defmodule MyApp.OrdersCaptureTest do
   test "the consume checkpoint links to the produce checkpoint" do
     points =
       DdDataStreams.Testing.capture(fn ->
-        [{_key, value}] = DdDataStreams.produce("orders-out", Jason.encode!(order))
+        pairs = DdDataStreams.produce("orders-out", Jason.encode!(order))
 
         DdDataStreams.consume(%{
           data: Jason.encode!(order),
           metadata: %{
             subscription: "projects/demo/subscriptions/orders-sub",
-            attributes: %{DdDataStreams.Config.header() => value}
+            attributes: Map.new(pairs)
           }
         })
       end)
@@ -827,9 +824,11 @@ What the library reports, emits and reads.
 ### Edge tags
 
 Edge tags come from the extractor. The Pub/Sub one reports a consume edge as
-`direction:in`, `subscription:<subscription>`, `type:google-pubsub` and a produce
-edge as `direction:out`, `topic:<topic>`, `type:google-pubsub`. Pub/Sub names
-subscriptions and topics as full resource names
+`direction:in`, `subscription:<subscription>`, `topic:<topic>`,
+`type:google-pubsub` when the producer wrote the `dd-topic` attribute, and as
+`direction:in`, `subscription:<subscription>`, `type:google-pubsub` otherwise. A
+produce edge is `direction:out`, `topic:<topic>`, `type:google-pubsub`. Pub/Sub
+names subscriptions and topics as full resource names
 (`projects/<project>/subscriptions/<id>`); the extractor reduces each to its
 short id, and an already-short name is reported as it is.
 
@@ -1194,7 +1193,7 @@ The flag is read in two different places, and the difference matters:
 * `attach/0`, and the default backend on every `produce/3`, `produce_batch/3`,
   `consume/1` and `checkpoint/1` call, read it on every call, so they follow a
   runtime change: attaching after boot installs handlers, and disabling stops
-  producing the pair. A backend other than the default decides for itself; the
+  producing the pairs. A backend other than the default decides for itself; the
   owner-scoped test backend, for example, ignores this flag.
 * `DdDataStreams.Application` reads it once, when the application starts. The
   aggregator is only started if the library was enabled at boot; turning the
@@ -1255,7 +1254,7 @@ One tier per broker, each a real Broadway pipeline on the real client:
 `test/integration/sqs_broker_test.exs` on goaws,
 `test/integration/kafka_broker_test.exs` on Apache Kafka and
 `test/integration/rabbitmq_broker_test.exs` on RabbitMQ. Each publishes a
-pathway into the broker, consumes it through the pipeline, and reads the pair
+pathway into the broker, consumes it through the pipeline, and reads the pairs
 `produce/3` returns back off a second queue or topic, so the metadata the client
 builds, the carrier and the tags are all checked against a running broker.
 

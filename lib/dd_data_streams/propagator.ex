@@ -25,6 +25,11 @@ defmodule DdDataStreams.Propagator do
   `get/1` returns `nil` and the consumer starts a new pathway. `fetch/1` tells
   the two apart, so a consumer that wants to report a header it could not read
   can.
+
+  Next to the pathway header, a producer writes the outgoing topic under
+  `dd-topic` (`topic_header/0`) whenever the extractor named one. It is not part
+  of the pathway codec: it is the tag a consumer whose metadata names only a
+  subscription reads to report the queue the pathway crossed.
   """
 
   alias DdDataStreams.Config
@@ -35,6 +40,8 @@ defmodule DdDataStreams.Propagator do
   @default_header "dd-pathway-ctx-base64"
 
   @legacy_header "dd-pathway-ctx"
+
+  @topic_header "dd-topic"
 
   # Group index of the last varint byte: a 64-bit unsigned integer takes at
   # most nine varint bytes, so the ninth (index 8) is taken whole.
@@ -190,6 +197,16 @@ defmodule DdDataStreams.Propagator do
   """
   @spec legacy_header() :: String.t()
   def legacy_header, do: @legacy_header
+
+  @doc """
+  The attribute or header key the producer writes the outgoing topic under,
+  `"#{@topic_header}"`.
+
+  It travels next to the pathway header, so a consumer whose broker metadata
+  names only the subscription can still report the topic the message crossed.
+  """
+  @spec topic_header() :: String.t()
+  def topic_header, do: @topic_header
 
   @doc """
   Encodes a pathway as the raw header bytes.

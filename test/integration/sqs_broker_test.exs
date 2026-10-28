@@ -137,17 +137,18 @@ defmodule DdDataStreams.SQSBrokerTest do
     assert pathway.hash == expected_hash(consume_tags, parent.hash)
     assert pathway.pathway_start == parent.pathway_start
 
-    # The pair `produce/3` returns still carries that pathway after the queue
+    # The pairs `produce/3` returns still carry that pathway after the queue
     # has stored and returned it. `produce/3` reads the pathway from the process
     # context, so putting the one the pipeline recorded back here is the same
     # hand-off a processor gets.
     Context.put(pathway)
 
     out_name = queue_name(out_queue)
-    assert [{^header, encoded}] = DdDataStreams.produce(out_name, "reply")
+    assert [{^header, encoded} | topic_pairs] = DdDataStreams.produce(out_name, "reply")
 
-    # The documented producer side: the pair wrapped into `_datadog`'s JSON.
-    send_message(out_queue, "reply", IO.iodata_to_binary(:json.encode(%{header => encoded})))
+    # The documented producer side: the pairs wrapped into `_datadog`'s JSON.
+    datadog = [{header, encoded} | topic_pairs] |> Map.new() |> :json.encode()
+    send_message(out_queue, "reply", IO.iodata_to_binary(datadog))
 
     %{"MessageAttributes" => %{"_datadog" => %{"StringValue" => datadog}}} =
       receive_message(out_queue)

@@ -18,13 +18,7 @@ defmodule DdDataStreams.Context do
       pathway = my_stage_consume_pathway
       :ok = DdDataStreams.Context.put(pathway)
 
-      attributes = existing_attributes
-
-      attributes =
-        case DdDataStreams.produce(topic, data) do
-          [{key, value}] -> Map.put(attributes, key, value)
-          [] -> attributes
-        end
+      attributes = Enum.into(DdDataStreams.produce(topic, data), existing_attributes)
 
       MyApp.Publisher.publish(topic, data, attributes: attributes)
 

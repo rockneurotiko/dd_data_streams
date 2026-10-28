@@ -33,7 +33,7 @@ defmodule DdDataStreams.OwnerScopedTest do
     assert :ok = Testing.start()
     assert :ok = Testing.start()
 
-    [{key, value}] = DdDataStreams.produce("orders-out", "payload")
+    [{key, value} | _topic] = DdDataStreams.produce("orders-out", "payload")
     assert key == DdDataStreams.Config.header()
 
     DdDataStreams.consume(%{
@@ -68,7 +68,7 @@ defmodule DdDataStreams.OwnerScopedTest do
     assert :ok = Testing.allow(self(), pid)
     send(pid, :go)
 
-    assert_receive {:produced, [{_key, _value}]}
+    assert_receive {:produced, [{_key, _value} | _topic]}
     assert [%{edge_tags: tags}] = Testing.checkpoints()
     assert "topic:orders-allowed" in tags
   end
@@ -92,7 +92,7 @@ defmodule DdDataStreams.OwnerScopedTest do
     assert :ok = Testing.allow(self(), name)
     send(pid, :go)
 
-    assert_receive {:produced, [{_key, _value}]}
+    assert_receive {:produced, [{_key, _value} | _topic]}
     assert [%{edge_tags: tags}] = Testing.checkpoints()
     assert "topic:orders-named" in tags
   end
@@ -104,7 +104,7 @@ defmodule DdDataStreams.OwnerScopedTest do
       for topic <- ["orders-a", "orders-b"] do
         Task.async(fn ->
           :ok = Testing.start()
-          [{_key, _value}] = DdDataStreams.produce(topic, "payload")
+          [{_key, _value} | _topic] = DdDataStreams.produce(topic, "payload")
           send(parent, {:ready, self(), topic})
 
           receive do
@@ -160,7 +160,7 @@ defmodule DdDataStreams.OwnerScopedTest do
     Testing.start()
     assert :ok = Testing.subscribe()
 
-    [{_key, _value}] = DdDataStreams.produce("orders-subscribed", "payload")
+    [{_key, _value} | _topic] = DdDataStreams.produce("orders-subscribed", "payload")
 
     assert_receive {DdDataStreams.Testing, :checkpoint, point}
     assert "topic:orders-subscribed" in point.edge_tags
@@ -182,7 +182,7 @@ defmodule DdDataStreams.OwnerScopedTest do
 
     assert :ok = Testing.allow(self(), :"#{pipeline}.Broadway.Processor_default_0")
 
-    [{_key, value}] = DdDataStreams.produce("orders-out", "payload")
+    [{_key, value} | _topic] = DdDataStreams.produce("orders-out", "payload")
 
     assert :ok = DdDataStreams.attach()
     on_exit(fn -> DdDataStreams.detach() end)

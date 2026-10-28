@@ -129,14 +129,16 @@ defmodule DdDataStreams.RabbitMQBrokerTest do
     assert pathway.hash == expected_hash(consume_tags, parent.hash)
     assert pathway.pathway_start == parent.pathway_start
 
-    # The pair `produce/3` returns still carries that pathway after RabbitMQ
+    # The pairs `produce/3` returns still carry that pathway after RabbitMQ
     # has stored and returned the headers table. `produce/3` reads the pathway
     # from the process context, so putting the one the pipeline recorded back
     # here is the same hand-off a processor gets.
     Context.put(pathway)
-    assert [{^header, encoded}] = DdDataStreams.produce(out_queue, "reply")
+    assert [{^header, encoded} | topic_pairs] = DdDataStreams.produce(out_queue, "reply")
 
-    AMQP.Basic.publish(channel, "", out_queue, "reply", headers: [{header, encoded}])
+    AMQP.Basic.publish(channel, "", out_queue, "reply",
+      headers: [{header, encoded} | topic_pairs]
+    )
 
     # A `{key, value}` pair goes out and a typed triple comes back, which is
     # what the carrier is written for.

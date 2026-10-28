@@ -24,6 +24,17 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
   pathway still connects, because the link between two nodes is the hash
   carried on the message. An already-short name is reported as it is.
 
+  A Pub/Sub message metadata carries only its subscription, so the topic is read
+  from the `dd-topic` attribute the library's own producer writes next to the
+  pathway header. When that attribute is present the consume edge reports both
+  `subscription:<subscription>` and `topic:<topic>`, because Datadog derives the
+  queues in the middle of a pathway - `data_streams.latency`'s `visited_queues`
+  and `detailed_pathway` - from the `topic` tag; with only a subscription the
+  queue between two services is missing. A message from a producer that did not
+  write the attribute, or from outside this library, keeps the subscription-only
+  tags: nothing is invented from the subscription's name, because naming is the
+  application's convention.
+
   The publish time Pub/Sub stamps on a message - `metadata.publishTime`, a
   `%DateTime{}` in v2 - starts the consume checkpoint of a message that starts a
   pathway, so a pipeline that only consumes reports how long the message waited
@@ -36,11 +47,13 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
 
   @behaviour DdDataStreams.Extractor
 
+  alias DdDataStreams.Propagator
+
   @impl true
   def consume(metadata) do
     case Map.get(metadata, :subscription) do
       subscription when is_binary(subscription) and subscription != "" ->
-        {:ok, tags("in", "subscription:" <> short_id(subscription)), parts(metadata)}
+        {:ok, tags("in", "subscription:" <> short_id(subscription), metadata), parts(metadata)}
 
       _ ->
         :error
@@ -54,7 +67,21 @@ defmodule DdDataStreams.Extractor.GooglePubSub do
   # when it carries no slashes.
   defp short_id(resource), do: resource |> String.split("/") |> List.last()
 
-  defp tags(direction, name), do: ["direction:" <> direction, name, "type:google-pubsub"]
+  defp tags(direction, name, metadata \\ %{}) do
+    ["direction:" <> direction, name] ++ topic(metadata) ++ ["type:google-pubsub"]
+  end
+
+  # The producer writes the topic it published to next to the pathway header;
+  # a message from another producer has no such attribute and reports none.
+  defp topic(metadata) do
+    with attributes when is_map(attributes) <- Map.get(metadata, :attributes),
+         topic when is_binary(topic) and topic != "" <-
+           Map.get(attributes, Propagator.topic_header()) do
+      ["topic:" <> short_id(topic)]
+    else
+      _ -> []
+    end
+  end
 
   defp parts(metadata) do
     %{

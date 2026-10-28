@@ -152,14 +152,14 @@ defmodule DdDataStreams.KafkaBrokerTest do
     assert pathway.hash == expected_hash(consume_tags, parent.hash)
     assert pathway.pathway_start == parent.pathway_start
 
-    # The pair `produce/3` returns is read back off the out topic, headers and
+    # The pairs `produce/3` returns are read back off the out topic, headers and
     # all, by a real consumer of the same client. `produce/3` reads the pathway
     # from the process context, so putting the one the pipeline recorded back
     # here is the same hand-off a processor gets.
     Context.put(pathway)
-    assert [{^header, encoded}] = DdDataStreams.produce(out_topic, "reply")
+    assert [{^header, encoded} | topic_pairs] = DdDataStreams.produce(out_topic, "reply")
 
-    publish(client, out_topic, "reply", [{header, encoded}])
+    publish(client, out_topic, "reply", [{header, encoded} | topic_pairs])
 
     start_pipeline(Sink, out_topic, "dsm-out-group-#{System.unique_integer([:positive])}")
 

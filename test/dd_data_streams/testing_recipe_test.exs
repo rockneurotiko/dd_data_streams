@@ -46,7 +46,7 @@ defmodule DdDataStreams.TestingRecipeTest do
   end
 
   test "a checkpoint from produce/3 is assertable immediately with flush(:all)" do
-    [_pair] = DdDataStreams.produce("orders-out", "payload")
+    [_pair | _topic] = DdDataStreams.produce("orders-out", "payload")
 
     # The checkpoint is stamped now, so its bucket is not complete: flush/0
     # keeps it, exactly as it does outside a test.

@@ -80,7 +80,7 @@ defmodule DdDataStreams.ServiceNameTest do
   test "the configured namer names a produce from its topic" do
     Application.put_env(:dd_data_streams, :service_name, Topical)
 
-    assert [{_key, _value}] = DdDataStreams.produce("orders", "hello")
+    assert [{_key, _value} | _topic] = DdDataStreams.produce("orders", "hello")
 
     [produce] = Testing.checkpoints()
     assert produce.edge_tags == ["direction:out", "topic:orders", "type:google-pubsub"]
@@ -161,7 +161,7 @@ defmodule DdDataStreams.ServiceNameTest do
 
     Application.put_env(:dd_data_streams, :service_name, Broken)
 
-    assert [{_key, _value}] = DdDataStreams.produce("orders", "hello")
+    assert [{_key, _value} | _topic] = DdDataStreams.produce("orders", "hello")
 
     [produce] = Testing.checkpoints()
     assert produce.hash == node_hash(Config.service(), produce.edge_tags)

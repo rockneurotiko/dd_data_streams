@@ -57,7 +57,7 @@ defmodule DdDataStreams.Extractor.RabbitMQ do
   returned as `:attributes`, so the carrier reads the pathway from the last
   element of the triple. `:undefined` - what `amqp` delivers when the publisher
   sent no headers or no timestamp - and any other non-list is treated as absent.
-  To publish the pathway, put the pair `produce/3` returns into `headers:` of
+  To publish the pathway, put the pairs `produce/3` returns into `headers:` of
   `AMQP.Basic.publish/5`: `amqp` casts a `{name, binary}` pair to a long string
   itself.
 

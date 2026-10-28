@@ -90,7 +90,7 @@ defmodule DdDataStreams.TestingTest do
 
     cleanup = Testing.enable!(transport: DdDataStreams.Transport.Capture)
 
-    [{_key, value}] = DdDataStreams.produce("orders-out", "payload")
+    [{_key, value} | _topic] = DdDataStreams.produce("orders-out", "payload")
     assert is_binary(value)
 
     assert :ok = Aggregator.flush(:all)
@@ -132,7 +132,7 @@ defmodule DdDataStreams.TestingTest do
 
     points =
       Testing.capture(fn ->
-        [{_key, value}] = DdDataStreams.produce("orders-out", "payload")
+        [{_key, value} | _topic] = DdDataStreams.produce("orders-out", "payload")
 
         DdDataStreams.consume(%{
           data: "payload",

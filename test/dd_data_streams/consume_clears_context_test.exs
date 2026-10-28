@@ -54,7 +54,7 @@ defmodule DdDataStreams.ConsumeClearsContextTest do
     assert DdDataStreams.consume(no_match) == nil
     assert Context.get() == nil
 
-    assert [{key, _value}] = DdDataStreams.produce("orders", "payload")
+    assert [{key, _value} | _topic] = DdDataStreams.produce("orders", "payload")
     assert key == "dd-pathway-ctx-base64"
 
     # A cleared context makes produce chain onto a fresh (hash 0) pathway.

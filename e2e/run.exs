@@ -97,11 +97,7 @@ defmodule E2e.Pipeline do
 
     outgoing_data = "reply:#{message.data}"
 
-    attributes =
-      case DdDataStreams.produce(E2e.Resources.out_topic(), outgoing_data) do
-        [{key, value}] -> Map.put(attributes, key, value)
-        [] -> attributes
-      end
+    attributes = Enum.into(DdDataStreams.produce(E2e.Resources.out_topic(), outgoing_data), attributes)
 
     outgoing = %{data: outgoing_data, attributes: attributes, ordering_key: nil}
     IO.puts("produce attributes: #{inspect(outgoing.attributes)}")
